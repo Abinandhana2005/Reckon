@@ -177,6 +177,30 @@ class UserSymbolAnchor(Base):
     anchor_snapshot_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
+class SimulationState(Base):
+    """A demo override, scoped to one user and removable in one call.
+
+    Held per user rather than globally so a judge driving the demo cannot alter
+    what anyone else sees, and stored rather than held in memory so it survives
+    the page reloads a walkthrough involves.
+
+    An absent row is the normal state. Nothing reads these columns unless a row
+    exists, which is what keeps the production path untouched.
+    """
+
+    __tablename__ = "simulation_state"
+
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    as_of: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    anchor_sessions_ago: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # {"SYMBOL": "STALE"} or {"*": "DISPUTED"} to cover the whole watchlist.
+    freshness_json: Mapped[str] = mapped_column(Text, default="{}")
+    scenario: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class VerdictRow(Base):
     """One classification, as it was shown to one user.
 

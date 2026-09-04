@@ -71,11 +71,20 @@ def load_symbol(db: Session, symbol: str) -> Symbol:
     return row
 
 
-def load_context(db: Session, symbol: str) -> SymbolContext:
+def load_context(
+    db: Session, symbol: str, *, as_of: datetime | None = None
+) -> SymbolContext:
+    """Market data for one symbol, optionally as it stood at a past session.
+
+    Truncating here rather than filtering later is what makes replaying a past
+    moment honest: the classifier sees the history that existed then, so its
+    baselines are the ones it would have used, not ones built from the future.
+    """
     meta = load_symbol(db, symbol)
-    bars = list(
-        db.scalars(select(DailyBar).where(DailyBar.symbol == symbol).order_by(DailyBar.day))
-    )
+    statement = select(DailyBar).where(DailyBar.symbol == symbol)
+    if as_of is not None:
+        statement = statement.where(DailyBar.day <= as_of.date())
+    bars = list(db.scalars(statement.order_by(DailyBar.day)))
     if not bars:
         raise NoMarketData(symbol)
 
@@ -96,7 +105,32 @@ def load_context(db: Session, symbol: str) -> SymbolContext:
     )
 
 
-def load_quote(db: Session, symbol: str) -> Quote:
+def load_quote(
+    db: Session,
+    symbol: str,
+    *,
+    as_of: datetime | None = None,
+    freshness: Freshness | None = None,
+) -> Quote:
+    """The quote for a symbol, optionally rewound to a past session's close.
+
+    A rewound quote is read from the bar for that session, because the stored
+    quote is always the latest one; leaving it in place would price a past
+    moment with a future number.
+    """
+    if as_of is not None:
+        point = price_on_or_before(db, symbol, as_of)
+        if point is None:
+            raise NoMarketData(f"{symbol} has no close at or before {as_of}")
+        event_time, price = point
+        return Quote(
+            symbol=symbol,
+            price=price,
+            event_time=event_time,
+            freshness=freshness or Freshness.CLOSED,
+            source="replay",
+        )
+
     row = db.get(QuoteRow, symbol)
     if row is None:
         raise NoMarketData(symbol)
@@ -104,9 +138,33 @@ def load_quote(db: Session, symbol: str) -> Quote:
         symbol=row.symbol,
         price=row.price,
         event_time=row.event_time,
-        freshness=Freshness(row.freshness),
+        freshness=freshness or Freshness(row.freshness),
         source=row.source,
     )
+
+
+def session_close(
+    db: Session, symbol: str, *, sessions_ago: int, as_of: datetime | None = None
+) -> tuple[datetime, float]:
+    """Close of the session `sessions_ago` before `as_of`, from the symbol's own bars.
+
+    Read off the symbol rather than the calendar so a recent listing anchors to
+    a session it actually traded in.
+    """
+    statement = (
+        select(TradingDay.close_at, DailyBar.close)
+        .join(DailyBar, DailyBar.day == TradingDay.day)
+        .where(DailyBar.symbol == symbol)
+    )
+    if as_of is not None:
+        statement = statement.where(TradingDay.close_at <= as_of)
+    bars = list(db.execute(statement.order_by(TradingDay.day)).all())
+    if not bars:
+        raise UnknownSymbol(f"{symbol} has no price history")
+
+    index = max(len(bars) - 1 - max(sessions_ago, 0), 0)
+    at, price = bars[index]
+    return at, price
 
 
 def load_events(db: Session, symbol: str) -> list[CorporateEvent]:

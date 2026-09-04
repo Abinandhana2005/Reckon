@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.clock import utcnow
 from app.config import DEFAULT_ANCHOR_SESSIONS_AGO
-from app.db.models import DailyBar, Symbol, TradingDay, UserSymbolAnchor, WatchlistItem
-from app.sources.replay import UnknownSymbol, load_symbol
+from app.db.models import Symbol, UserSymbolAnchor, WatchlistItem
+from app.sources import replay
+from app.sources.replay import load_symbol
 
 
 def list_symbols(db: Session, query: str | None = None, limit: int = 50) -> list[Symbol]:
@@ -91,7 +92,7 @@ def ensure_anchor(
     if existing is not None:
         return existing
 
-    at, price = _session_close(db, symbol, sessions_ago)
+    at, price = replay.session_close(db, symbol, sessions_ago=sessions_ago)
     anchor = UserSymbolAnchor(
         user_id=user_id,
         symbol=symbol,
@@ -102,25 +103,3 @@ def ensure_anchor(
     db.add(anchor)
     db.flush()
     return anchor
-
-
-def _session_close(db: Session, symbol: str, sessions_ago: int) -> tuple[datetime, float]:
-    """Close of the session `sessions_ago` back, from the symbol's own bars.
-
-    Read off the symbol rather than the calendar so a recent listing anchors to
-    a session it actually traded in.
-    """
-    bars = list(
-        db.execute(
-            select(TradingDay.close_at, DailyBar.close)
-            .join(DailyBar, DailyBar.day == TradingDay.day)
-            .where(DailyBar.symbol == symbol)
-            .order_by(TradingDay.day)
-        ).all()
-    )
-    if not bars:
-        raise UnknownSymbol(f"{symbol} has no price history")
-
-    index = max(len(bars) - 1 - max(sessions_ago, 0), 0)
-    at, price = bars[index]
-    return at, price

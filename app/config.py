@@ -23,6 +23,15 @@ DATABASE_URL = os.environ.get(
 SESSION_HEADER = "X-Session-Token"
 SESSION_TTL_DAYS = 30
 
+# The demo endpoints under /api/dev exist to drive the fixture's designed
+# scenarios. They are inert until a simulation is set, and can be switched off
+# entirely for a deployment that should not expose them.
+DEV_ENDPOINTS_ENABLED = os.environ.get("RECKON_DEV_ENDPOINTS", "1") not in {"0", "false", "False"}
+
+# Where the built frontend is served from. Absent until the Vite build runs,
+# which is why serving it is conditional rather than assumed.
+WEB_DIST = Path(os.environ.get("RECKON_WEB_DIST", str(PROJECT_ROOT / "web" / "dist")))
+
 # A newly watched symbol needs a reference point. One session back means the
 # first brief a user sees describes the most recent session rather than nothing.
 DEFAULT_ANCHOR_SESSIONS_AGO = 1

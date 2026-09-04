@@ -25,8 +25,10 @@ from app.api import copy, serialize
 from app.db.models import DailyBar, Symbol, UserSymbolAnchor, VerdictRow
 from app.domain.brief import Brief, assemble
 from app.domain.classifier import ClassificationRequest, classify
-from app.domain.verdicts import Anchor, Classification
+from app.domain.verdicts import Anchor, Classification, Quote
+from app.services import simulation as simulation_service
 from app.services import watchlist
+from app.services.simulation import NO_SIMULATION, Simulation
 from app.sources import replay
 
 SPARKLINE_SESSIONS = 60
@@ -45,32 +47,68 @@ class BriefAccountingError(RuntimeError):
 
 
 def classify_symbol(
-    db: Session, user_id: str, symbol: str, now: datetime
-) -> tuple[Classification, UserSymbolAnchor]:
-    anchor_row = watchlist.ensure_anchor(db, user_id, symbol)
+    db: Session,
+    user_id: str,
+    symbol: str,
+    now: datetime,
+    simulation: Simulation = NO_SIMULATION,
+) -> tuple[Classification, Anchor, Quote]:
+    anchor = _anchor_for(db, user_id, symbol, simulation)
+    quote = replay.load_quote(
+        db, symbol, as_of=simulation.as_of, freshness=simulation.freshness_for(symbol)
+    )
     request = ClassificationRequest(
-        context=replay.load_context(db, symbol),
-        anchor=Anchor(
-            symbol=symbol,
-            at=anchor_row.anchor_at,
-            price=anchor_row.anchor_price,
-            snapshot_id=anchor_row.anchor_snapshot_id,
-        ),
-        quote=replay.load_quote(db, symbol),
+        context=replay.load_context(db, symbol, as_of=simulation.as_of),
+        anchor=anchor,
+        quote=quote,
         now=now,
         events=replay.load_events(db, symbol),
     )
-    return classify(request), anchor_row
+    return classify(request), anchor, quote
 
 
-def build_brief(db: Session, user, *, now: datetime | None = None) -> dict:
-    moment = now or replay.replay_now(db)
+def _anchor_for(
+    db: Session, user_id: str, symbol: str, simulation: Simulation
+) -> Anchor:
+    """The user's stored anchor, or a computed one while a simulation is running.
+
+    A simulated anchor is deliberately not written down. The demo needs a
+    starting point for a moment the user was never actually at, and storing it
+    would overwrite where they really were.
+    """
+    if simulation.anchor_sessions_ago is not None:
+        at, price = replay.session_close(
+            db,
+            symbol,
+            sessions_ago=simulation.anchor_sessions_ago,
+            as_of=simulation.as_of,
+        )
+        return Anchor(symbol=symbol, at=at, price=price)
+
+    row = watchlist.ensure_anchor(db, user_id, symbol)
+    return Anchor(
+        symbol=symbol,
+        at=row.anchor_at,
+        price=row.anchor_price,
+        snapshot_id=row.anchor_snapshot_id,
+    )
+
+
+def build_brief(
+    db: Session,
+    user,
+    *,
+    now: datetime | None = None,
+    simulation: Simulation | None = None,
+) -> dict:
+    active = simulation if simulation is not None else simulation_service.get(db, user.id)
+    moment = now or active.as_of or replay.replay_now(db)
     symbols = watchlist.watched_symbols(db, user.id)
 
     classifications: list[Classification] = []
     for symbol in symbols:
-        item, anchor_row = classify_symbol(db, user.id, symbol, moment)
-        _record(db, user.id, item, anchor_row.anchor_at)
+        item, anchor, quote = classify_symbol(db, user.id, symbol, moment, active)
+        _record(db, user.id, item, anchor.at, quote)
         classifications.append(item)
 
     market_code = replay.market_index(db)
@@ -95,7 +133,10 @@ def build_brief(db: Session, user, *, now: datetime | None = None) -> dict:
         else None
     )
 
-    user.last_open_at = moment
+    # The narrative clock records real visits. A replayed moment is not one, and
+    # stamping it would leave the clock behind the user's actual last look.
+    if not active.active:
+        user.last_open_at = moment
     db.commit()
 
     return _payload(
@@ -106,6 +147,7 @@ def build_brief(db: Session, user, *, now: datetime | None = None) -> dict:
         sessions_since_last_open=sessions_since,
         market_index=market_code,
         market_return_since_last_open=market_since_last_open,
+        simulation=active,
     )
 
 
@@ -155,23 +197,29 @@ def acknowledge(db: Session, user, symbol: str, snapshot_id: str) -> dict:
     }
 
 
-def symbol_detail(db: Session, user, symbol: str, *, now: datetime | None = None) -> dict:
-    moment = now or replay.replay_now(db)
-    item, anchor_row = classify_symbol(db, user.id, symbol, moment)
-    _record(db, user.id, item, anchor_row.anchor_at)
+def symbol_detail(
+    db: Session,
+    user,
+    symbol: str,
+    *,
+    now: datetime | None = None,
+    simulation: Simulation | None = None,
+) -> dict:
+    active = simulation if simulation is not None else simulation_service.get(db, user.id)
+    moment = now or active.as_of or replay.replay_now(db)
+    item, anchor, quote = classify_symbol(db, user.id, symbol, moment, active)
+    _record(db, user.id, item, anchor.at, quote)
     db.commit()
 
     names = _names(db)
     index_names = replay.index_names(db)
     sector_name = index_names.get(item.evidence.sector_index or "")
 
+    statement = select(DailyBar.day, DailyBar.close).where(DailyBar.symbol == symbol)
+    if active.as_of is not None:
+        statement = statement.where(DailyBar.day <= active.as_of.date())
     bars = list(
-        db.execute(
-            select(DailyBar.day, DailyBar.close)
-            .where(DailyBar.symbol == symbol)
-            .order_by(DailyBar.day.desc())
-            .limit(SPARKLINE_SESSIONS)
-        ).all()
+        db.execute(statement.order_by(DailyBar.day.desc()).limit(SPARKLINE_SESSIONS)).all()
     )
 
     return {
@@ -180,18 +228,25 @@ def symbol_detail(db: Session, user, symbol: str, *, now: datetime | None = None
         "evidence": serialize.evidence_dict(item.evidence),
         "sector_name": sector_name,
         "anchor": {
-            "at": anchor_row.anchor_at.isoformat(),
-            "price": anchor_row.anchor_price,
-            "snapshot_id": anchor_row.anchor_snapshot_id,
+            "at": anchor.at.isoformat(),
+            "price": anchor.price,
+            "snapshot_id": anchor.snapshot_id,
         },
         "sparkline": [
             {"date": day.isoformat(), "close": close} for day, close in reversed(bars)
         ],
         "as_of": moment.isoformat(),
+        "simulation": simulation_service.describe(db, active),
     }
 
 
-def _record(db: Session, user_id: str, item: Classification, anchor_at: datetime) -> None:
+def _record(
+    db: Session,
+    user_id: str,
+    item: Classification,
+    anchor_at: datetime,
+    quote: Quote,
+) -> None:
     """Keep what the user was shown, keyed by the snapshot it was shown for."""
     existing = db.scalar(
         select(VerdictRow).where(
@@ -214,24 +269,19 @@ def _record(db: Session, user_id: str, item: Classification, anchor_at: datetime
             setattr(existing, key, value)
         return
 
-    snapshot_at, snapshot_price = _snapshot_state(db, item)
     db.add(
         VerdictRow(
             user_id=user_id,
             symbol=item.symbol,
             snapshot_id=item.snapshot_id,
-            snapshot_at=snapshot_at,
-            snapshot_price=snapshot_price,
+            # Taken from the quote the snapshot id was derived from, so a
+            # replayed moment records the price that was on screen then.
+            snapshot_at=quote.event_time,
+            snapshot_price=quote.price,
             **values,
         )
     )
     db.flush()
-
-
-def _snapshot_state(db: Session, item: Classification) -> tuple[datetime, float]:
-    """The price and time the snapshot id was derived from."""
-    quote = replay.load_quote(db, item.symbol)
-    return quote.event_time, quote.price
 
 
 def _sector_returns(classifications: list[Classification]) -> dict[str, float | None]:
@@ -266,6 +316,7 @@ def _payload(
     sessions_since_last_open: int,
     market_index: str,
     market_return_since_last_open: float | None,
+    simulation: Simulation,
 ) -> dict:
     names = _names(db)
     index_names = replay.index_names(db)
@@ -305,6 +356,7 @@ def _payload(
     counts = brief.counts
     return {
         "as_of": as_of.isoformat(),
+        "simulation": simulation_service.describe(db, simulation),
         "last_open_at": last_open_at.isoformat() if last_open_at else None,
         "sessions_since_last_open": sessions_since_last_open,
         "market": {

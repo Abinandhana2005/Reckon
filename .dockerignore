@@ -1,0 +1,21 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.venv
+venv
+
+# Local SQLite; a deployment uses Postgres via DATABASE_URL.
+*.db
+
+# Frontend sources are built outside the image; only web/dist is served.
+web/node_modules
+web/src
+
+tests
+alembic/README
