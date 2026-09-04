@@ -16,3 +16,6 @@ venv/
 # Live-mode pulls land here. Exchange data is licensed for internal use only and must
 # never enter the repo; the committed fixture under fixtures/ is synthetic and is tracked.
 data/live/
+
+# Local SQLite database, created on first run.
+*.db
