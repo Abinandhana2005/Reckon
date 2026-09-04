@@ -76,10 +76,17 @@ SYMBOLS = [
 
 # Sessions counted from the end: 149 is the latest, so -1 is today.
 TODAY = SESSIONS - 1
-MARKET_SHOCK_DAY = TODAY - 4
-SECTOR_SHOCK_DAY = TODAY - 3
-ANOMALY_DAY = TODAY - 2
+
+# A user who was away five sessions is compared against a five-session window, so the
+# scenarios have to be far enough apart that one window holds exactly one scenario.
+# Four consecutive scenario days meant a five-session window ending on the sector fall
+# also swallowed the market crash, and the sector move stopped being separable from it.
+SCENARIO_SPACING = 8
+
 RALLY_DAY = TODAY - 1
+ANOMALY_DAY = RALLY_DAY - SCENARIO_SPACING
+SECTOR_SHOCK_DAY = ANOMALY_DAY - SCENARIO_SPACING
+MARKET_SHOCK_DAY = SECTOR_SHOCK_DAY - SCENARIO_SPACING
 
 SCENARIOS = {
     MARKET_SHOCK_DAY: "market-wide fall",
@@ -93,6 +100,36 @@ SECTOR_SHOCK = ("BANKIDX", -0.040)
 ANOMALY = ("VNTP", 0.031)
 RALLY = 0.025
 RALLY_NON_PARTICIPANT = "ZNTH"
+
+# Each scenario builds over the sessions before it rather than arriving as a one-day
+# spike. A spike is invisible to anyone who was away: over five sessions it is averaged
+# against four ordinary days and lands inside the stock's normal range, so the classifier
+# correctly calls it QUIET and the demo has nothing to show. Real dislocations persist,
+# and a persistent move stays unusual at every window length.
+#
+# The build-up is deliberately milder per day than the scenario day itself. For a
+# one-session gap those days sit in the baseline the shock is judged against, and a
+# build-up as violent as the shock would raise the bar enough to mask it.
+RUNUP = 4
+MARKET_SHOCK_RUNUP = -0.011
+SECTOR_SHOCK_RUNUP = -0.010
+ANOMALY_RUNUP = 0.008
+# Sitting out a rally is only remarkable if the rally outruns the stock's own noise.
+# ZNTH drifts about 1.4% a day on its own, so a rally of two or three percent across a
+# week says nothing; the gap only leaves its normal range once the climb is decisive.
+RALLY_RUNUP = 0.013
+
+# The sector fall has to read as sector-specific, so the market is held quiet while it
+# happens rather than left to drift into its own move.
+SECTOR_SHOCK_MARKET_DAMPING = 0.3
+
+
+def _runup(scenario_day: int) -> range:
+    return range(scenario_day - RUNUP, scenario_day)
+
+
+def _staged(day: int, scenario_day: int) -> bool:
+    return scenario_day - RUNUP <= day <= scenario_day
 
 
 def trading_days(count: int, last: date) -> list[date]:
@@ -110,6 +147,15 @@ def build(seed: int = SEED, last_session: date | None = None) -> dict:
     sessions = trading_days(SESSIONS, last_session or date(2026, 9, 4))
 
     market_returns = [rng.gauss(0.0004, MARKET_DAILY_VOL) for _ in range(SESSIONS)]
+
+    # Drift is added to the random draw rather than replacing it, so the build-up still
+    # looks like a market and not like four identical sessions.
+    for day in _runup(MARKET_SHOCK_DAY):
+        market_returns[day] += MARKET_SHOCK_RUNUP
+    for day in _runup(RALLY_DAY):
+        market_returns[day] += RALLY_RUNUP
+    for day in _runup(SECTOR_SHOCK_DAY):
+        market_returns[day] *= SECTOR_SHOCK_MARKET_DAMPING
     market_returns[MARKET_SHOCK_DAY] = MARKET_SHOCK
     market_returns[SECTOR_SHOCK_DAY] = 0.001
     market_returns[RALLY_DAY] = RALLY
@@ -118,6 +164,17 @@ def build(seed: int = SEED, last_session: date | None = None) -> dict:
         code: [rng.gauss(0.0, SECTOR_EXCESS_VOL) for _ in range(SESSIONS)]
         for code in SECTORS
     }
+    # Sector dispersion collapses in a broad move: when the whole market is selling,
+    # sectors stop going their own way. Leaving it at full width let one sector's draw
+    # cancel most of the market's fall for its stocks, which then looked ordinary rather
+    # than caught in a crash, and the fall stopped being visibly market-wide.
+    for scenario in (MARKET_SHOCK_DAY, RALLY_DAY):
+        for day in range(scenario - RUNUP, scenario + 1):
+            for code in SECTORS:
+                sector_excess[code][day] *= SCENARIO_DAMPING
+
+    for day in _runup(SECTOR_SHOCK_DAY):
+        sector_excess[SECTOR_SHOCK[0]][day] += SECTOR_SHOCK_RUNUP
     sector_excess[SECTOR_SHOCK[0]][SECTOR_SHOCK_DAY] = (
         SECTOR_SHOCK[1] - market_returns[SECTOR_SHOCK_DAY]
     )
@@ -134,14 +191,21 @@ def build(seed: int = SEED, last_session: date | None = None) -> dict:
             if spec.sector_index
             else market_returns
         )
-        returns = [
-            r + rng.gauss(0.0, spec.idio_vol * _idio_damping(spec, day))
-            for day, r in enumerate(reference)
+        idio = [
+            rng.gauss(0.0, spec.idio_vol * _idio_damping(spec, day))
+            for day in range(SESSIONS)
         ]
+        returns = [r + i for r, i in zip(reference, idio)]
 
         if spec.symbol == ANOMALY[0]:
+            for day in _runup(ANOMALY_DAY):
+                returns[day] += ANOMALY_RUNUP
             returns[ANOMALY_DAY] = reference[ANOMALY_DAY] + ANOMALY[1]
         if spec.symbol == RALLY_NON_PARTICIPANT:
+            # Sitting out a rally means going nowhere while the market climbs, not
+            # printing an identical zero for five sessions.
+            for day in _runup(RALLY_DAY):
+                returns[day] = idio[day] * 0.25
             returns[RALLY_DAY] = 0.0
 
         series = _apply_actions(_series(spec.base_price, returns), spec.symbol, sessions)
@@ -233,11 +297,11 @@ def _idio_damping(spec: SymbolSpec, day: int) -> float:
     sector fell 4%, which is a perfectly reasonable market outcome but destroys
     the case the fixture exists to demonstrate.
     """
-    if day == MARKET_SHOCK_DAY or day == RALLY_DAY:
+    if _staged(day, MARKET_SHOCK_DAY) or _staged(day, RALLY_DAY):
         return SCENARIO_DAMPING
-    if day == SECTOR_SHOCK_DAY and spec.sector_index == SECTOR_SHOCK[0]:
+    if _staged(day, SECTOR_SHOCK_DAY) and spec.sector_index == SECTOR_SHOCK[0]:
         return SCENARIO_DAMPING
-    if day == ANOMALY_DAY and spec.symbol != ANOMALY[0]:
+    if _staged(day, ANOMALY_DAY) and spec.symbol != ANOMALY[0]:
         return SCENARIO_DAMPING
     return 1.0
 
