@@ -19,3 +19,7 @@ data/live/
 
 # Local SQLite database, created on first run.
 *.db
+
+# Frontend build output and dependencies.
+web/node_modules/
+web/dist/

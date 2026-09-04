@@ -1,0 +1,844 @@
+/*
+ * Colour encodes certainty, not direction.
+ *
+ * A trading UI paints gains green and losses red, which tells the reader what
+ * happened to the price. Reckon's subject is different: how much it is willing
+ * to claim. So amber marks the one verdict it cannot account for, grey marks
+ * the data it does not trust, and everything it can explain stays in ink --
+ * including a stock down four percent, because an explained fall is not an
+ * alarm. A number's sign is left to the number.
+ */
+
+:root {
+  --paper: #fbfaf8;
+  --paper-raised: #ffffff;
+  --ink: #1b1a16;
+  --ink-soft: #46443c;
+  --ink-muted: #78756a;
+  --ink-faint: #a5a196;
+  --rule: #e6e2da;
+  --rule-strong: #d4cfc4;
+
+  /* Unexplained: the only thing on screen that should feel unresolved. */
+  --amber: #96610f;
+  --amber-wash: #fdf4e6;
+  --amber-rule: #e8d3ac;
+
+  /* Untrusted data: present, accounted for, deliberately inert. */
+  --grey: #7c7a72;
+  --grey-wash: #f2f1ee;
+
+  /* A confirmed fact: certain, but not loud. */
+  --known: #2c4a5a;
+  --known-wash: #eef3f6;
+
+  --focus: #2c4a5a;
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, ui-serif, serif;
+  --sans: ui-sans-serif, -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --measure: 40rem;
+  --step: 0.25rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #14140f;
+    --paper-raised: #1c1b16;
+    --ink: #f0eee7;
+    --ink-soft: #c9c5ba;
+    --ink-muted: #96928a;
+    --ink-faint: #6b6862;
+    --rule: #2b2a24;
+    --rule-strong: #3a382f;
+
+    --amber: #e2ad63;
+    --amber-wash: #241d10;
+    --amber-rule: #4a3a1d;
+
+    --grey: #8b8880;
+    --grey-wash: #1f1e1a;
+
+    --known: #9fc2d4;
+    --known-wash: #162026;
+
+    --focus: #9fc2d4;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.wrap {
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.topbar {
+  border-bottom: 1px solid var(--rule);
+  padding: 1.1rem 0;
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(8px);
+  z-index: 10;
+}
+
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  letter-spacing: 0.01em;
+  font-weight: 600;
+}
+
+.navlinks {
+  display: flex;
+  gap: 1.25rem;
+  align-items: center;
+}
+
+.navlink {
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  text-decoration: none;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.navlink:hover {
+  color: var(--ink);
+  border-bottom-color: var(--rule-strong);
+}
+
+.navlink[aria-current="page"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+main {
+  flex: 1;
+  padding: 2.5rem 0 5rem;
+}
+
+/* ---------- typography ---------- */
+
+.display {
+  font-family: var(--serif);
+  font-size: clamp(2rem, 6vw, 2.9rem);
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  font-weight: 500;
+  margin: 0;
+}
+
+.lede {
+  font-family: var(--serif);
+  font-size: clamp(1.25rem, 3.5vw, 1.6rem);
+  line-height: 1.35;
+  font-weight: 400;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+.section-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  font-weight: 600;
+  margin: 0;
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- brief header ---------- */
+
+.brief-head {
+  margin-bottom: 3rem;
+}
+
+.brief-head p {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(1.3rem, 4vw, 1.75rem);
+  line-height: 1.4;
+  color: var(--ink-faint);
+  transition: color 0.4s ease;
+}
+
+.brief-head p.lead {
+  color: var(--ink);
+}
+
+.brief-head p.accounting {
+  color: var(--ink);
+  margin-top: 0.6rem;
+}
+
+/* ---------- sections ---------- */
+
+.section {
+  margin-top: 3rem;
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.section-count {
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- stock rows ---------- */
+
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 1.15rem 0.85rem 1.15rem 1rem;
+  border-bottom: 1px solid var(--rule);
+  border-left: 2px solid transparent;
+  margin-left: -1rem;
+  transition: background 0.15s ease, border-left-color 0.15s ease;
+}
+
+.row:hover {
+  background: var(--paper-raised);
+  border-left-color: var(--rule-strong);
+}
+
+.row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.ticker {
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.company {
+  font-size: 0.85rem;
+  color: var(--ink-faint);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.row-headline {
+  margin: 0.4rem 0 0;
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.row.amber {
+  border-left-color: var(--amber-rule);
+  background: linear-gradient(to right, var(--amber-wash), transparent 62%);
+}
+
+.row.amber:hover {
+  border-left-color: var(--amber);
+}
+
+.row.grey .ticker,
+.row.grey .change,
+.row.grey .row-headline {
+  color: var(--grey);
+}
+
+/* ---------- epistemic tag ---------- */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.tag.unknown-amber {
+  color: var(--amber);
+}
+.tag.unknown-grey {
+  color: var(--grey);
+}
+.tag.known {
+  color: var(--known);
+}
+.tag.inferred {
+  color: var(--ink-muted);
+}
+
+/* ---------- groups ---------- */
+
+.group {
+  border-bottom: 1px solid var(--rule);
+}
+
+.group-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  width: 100%;
+  text-align: left;
+  padding: 1.15rem 0;
+  transition: opacity 0.15s ease;
+}
+
+.group-toggle:hover {
+  opacity: 0.72;
+}
+
+.group-line {
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  line-height: 1.45;
+  flex: 1;
+}
+
+.chev {
+  color: var(--ink-faint);
+  font-size: 0.75rem;
+  transition: transform 0.18s ease;
+  flex: none;
+}
+
+.chev.open {
+  transform: rotate(90deg);
+}
+
+.group-body {
+  padding: 0 0 0.5rem 0;
+  animation: unfold 0.18s ease;
+}
+
+@keyframes unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.group-hint {
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+  padding: 0 0 0.85rem;
+}
+
+/* ---------- compact list (quiet / cant say) ---------- */
+
+.compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.9rem 0 1.2rem;
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  color: var(--ink-muted);
+  background: var(--paper-raised);
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.chip:hover {
+  border-color: var(--rule-strong);
+  color: var(--ink);
+}
+
+.chip.grey {
+  background: var(--grey-wash);
+}
+
+/* ---------- detail ---------- */
+
+.back {
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  text-decoration: none;
+  display: inline-block;
+  margin-bottom: 2rem;
+}
+
+.back:hover {
+  color: var(--ink);
+}
+
+.detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.detail-change {
+  font-family: var(--serif);
+  font-size: clamp(1.9rem, 6vw, 2.5rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.verdict-statement {
+  font-family: var(--serif);
+  font-size: clamp(1.3rem, 4vw, 1.65rem);
+  line-height: 1.4;
+  margin: 2rem 0 0.9rem;
+}
+
+.detail-prose {
+  color: var(--ink-soft);
+  margin: 0;
+  max-width: 34rem;
+}
+
+.panel {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1.4rem 1.5rem;
+  margin-top: 2.5rem;
+  background: var(--paper-raised);
+}
+
+.panel.amber {
+  border-color: var(--amber-rule);
+  background: var(--amber-wash);
+}
+
+.panel.grey {
+  background: var(--grey-wash);
+}
+
+.panel h3 {
+  margin: 0 0 0.9rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.panel p {
+  margin: 0 0 0.7rem;
+  color: var(--ink-soft);
+}
+
+.panel p:last-child {
+  margin-bottom: 0;
+}
+
+.ledger {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.7rem 1.5rem;
+  font-size: 0.92rem;
+  margin: 0;
+}
+
+.ledger dt {
+  color: var(--ink-muted);
+}
+
+.ledger dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger dd.flag {
+  color: var(--amber);
+}
+
+.disclaimer {
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+  font-style: italic;
+  margin-top: 1rem;
+}
+
+/* ---------- sparkline ---------- */
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 84px;
+  overflow: visible;
+}
+
+.spark-line {
+  fill: none;
+  stroke: var(--ink-soft);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark-anchor {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark-caption {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  margin-top: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- welcome ---------- */
+
+.welcome {
+  padding: clamp(2rem, 10vh, 6rem) 0 4rem;
+}
+
+.welcome .display {
+  margin-bottom: 1.25rem;
+}
+
+.choices {
+  display: grid;
+  gap: 1rem;
+  margin-top: 3rem;
+}
+
+@media (min-width: 40rem) {
+  .choices {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.choice {
+  display: block;
+  text-align: left;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 1.5rem;
+  background: var(--paper-raised);
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.choice:hover:not(:disabled) {
+  border-color: var(--ink-faint);
+  transform: translateY(-2px);
+}
+
+.choice:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.choice h2 {
+  margin: 0 0 0.5rem;
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+
+.choice p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.choice-primary {
+  border-color: var(--rule-strong);
+}
+
+/* ---------- demo banner ---------- */
+
+.demobar {
+  background: var(--known-wash);
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.85rem;
+}
+
+/* The bar is chrome, not prose, so it is not held to the reading measure the
+   brief uses; at that width the scenario pills wrap onto three rows. */
+.demobar .wrap {
+  max-width: 58rem;
+}
+
+.demobar-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  /* This element carries .wrap as well, so the horizontal padding has to be
+     restated here: a shorthand on the same element would drop it otherwise. */
+  padding: 0.7rem 1.5rem;
+}
+
+.demobar strong {
+  color: var(--known);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  /* Neither the label nor the exit may be squeezed by the scrolling pills;
+     without this they shrink below their text and clip on a phone. */
+  flex: none;
+}
+
+.scenarios {
+  display: flex;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  /* Scrolls sideways on a phone rather than stacking and pushing the brief
+     itself below the fold. */
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 1px;
+}
+
+.scenarios::-webkit-scrollbar {
+  display: none;
+}
+
+.scenario {
+  font-size: 0.78rem;
+  padding: 0.28rem 0.6rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  color: var(--ink-muted);
+  background: var(--paper);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.scenario:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
+.scenario[aria-pressed="true"] {
+  background: var(--known);
+  border-color: var(--known);
+  color: var(--paper);
+}
+
+.leave {
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.leave:hover {
+  color: var(--ink);
+}
+
+/* ---------- watchlist ---------- */
+
+.search {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: var(--paper-raised);
+  margin: 1.5rem 0 0.5rem;
+}
+
+.search::placeholder {
+  color: var(--ink-faint);
+}
+
+.manage-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.manage-row .company {
+  white-space: normal;
+}
+
+.action {
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  border: 1px solid var(--rule-strong);
+  border-radius: 3px;
+  padding: 0.3rem 0.7rem;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.action:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- states ---------- */
+
+.state {
+  padding: 4rem 0;
+  text-align: center;
+  color: var(--ink-muted);
+}
+
+.state .display {
+  font-size: clamp(1.4rem, 4vw, 1.9rem);
+  color: var(--ink);
+  margin-bottom: 0.75rem;
+}
+
+.skeleton {
+  height: 1rem;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--rule) 25%, var(--paper-raised) 50%, var(--rule) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+  margin-bottom: 0.75rem;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.settled {
+  padding: 3rem 0;
+  border-top: 1px solid var(--rule);
+  margin-top: 3rem;
+}
+
+.settled .display {
+  font-size: clamp(1.6rem, 5vw, 2.1rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

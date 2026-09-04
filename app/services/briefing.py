@@ -363,6 +363,11 @@ def _payload(
             "index": market_index,
             "name": index_names.get(market_index, "Market"),
             "return_since_last_open": market_return_since_last_open,
+            # The market's move across the window the verdicts were actually
+            # computed against. It differs from the line above whenever the
+            # anchor and the last visit are not the same moment, which is the
+            # normal case: acknowledgements move one and opening moves the other.
+            "return_over_window": brief.market_return,
         },
         "counts": counts,
         "accounting_line": copy.accounting_line(counts),
