@@ -19,7 +19,15 @@ from app.db.base import Base
 from app.db import models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+# Keep an explicit URL supplied by the CLI or startup migration. The generated
+# alembic.ini contains a placeholder, which must fall back to app.config.
+configured_url = config.get_main_option("sqlalchemy.url")
+database_url = (
+    configured_url
+    if configured_url and configured_url != "driver://user:pass@localhost/dbname"
+    else DATABASE_URL
+)
+config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -29,7 +37,7 @@ target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=DATABASE_URL,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

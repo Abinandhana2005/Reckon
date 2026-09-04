@@ -20,14 +20,15 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.config import DATABASE_URL, DEV_ENDPOINTS_ENABLED, WEB_DIST, live_enabled
-from app.db.base import Base, SessionLocal, engine, get_db
+from app.db.base import SessionLocal, engine, get_db
+from app.db.migrate import ensure_schema
 from app.db.seed import is_seeded, seed
 from app.api.routes import briefing, dev, live, session, watchlist
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(engine)
+    ensure_schema(engine)
     with SessionLocal() as db:
         if not is_seeded(db):
             seed(db)
