@@ -12,6 +12,7 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import SOURCE_REPLAY
 from app.db.models import (
     CorporateEventRow,
     DailyBar,
@@ -33,31 +34,49 @@ class NoMarketData(LookupError):
     """The database holds no sessions; nothing can be classified."""
 
 
-def replay_now(db: Session) -> datetime:
-    """The moment the replay considers 'now': the last session's close.
+def replay_now(db: Session, source: str = SOURCE_REPLAY) -> datetime:
+    """The moment this source considers 'now': its last session's close.
 
     Held to the data rather than to the wall clock, so a brief is reproducible
-    and does not silently go stale between demo runs.
+    and does not silently go stale between demo runs. Scoped by source, because
+    a live session arriving must not move the moment a demo brief is built for.
     """
-    last = db.scalar(select(TradingDay).order_by(TradingDay.day.desc()).limit(1))
+    last = db.scalar(
+        select(TradingDay)
+        .where(TradingDay.source == source)
+        .order_by(TradingDay.day.desc())
+        .limit(1)
+    )
     if last is None:
-        raise NoMarketData("no trading days have been seeded")
+        raise NoMarketData(f"no trading days recorded for {source}")
     return last.close_at
 
 
-def trading_days(db: Session) -> list[date]:
-    return list(db.scalars(select(TradingDay.day).order_by(TradingDay.day)))
+def trading_days(db: Session, source: str = SOURCE_REPLAY) -> list[date]:
+    return list(
+        db.scalars(
+            select(TradingDay.day)
+            .where(TradingDay.source == source)
+            .order_by(TradingDay.day)
+        )
+    )
 
 
-def sessions_between(db: Session, start: datetime | None, end: datetime) -> int:
-    """Trading sessions that closed in (start, end]."""
+def sessions_between(
+    db: Session, start: datetime | None, end: datetime, source: str = SOURCE_REPLAY
+) -> int:
+    """Trading sessions of this source that closed in (start, end]."""
     if start is None:
         return 0
     return len(
         list(
             db.scalars(
                 select(TradingDay.day)
-                .where(TradingDay.close_at > start, TradingDay.close_at <= end)
+                .where(
+                    TradingDay.source == source,
+                    TradingDay.close_at > start,
+                    TradingDay.close_at <= end,
+                )
                 .order_by(TradingDay.day)
             )
         )
@@ -89,7 +108,7 @@ def load_context(
         raise NoMarketData(symbol)
 
     sessions = [bar.day for bar in bars]
-    market_closes = _index_closes(db, _market_index(db), sessions)
+    market_closes = _index_closes(db, _market_index(db, meta.source), sessions)
     sector_closes = (
         _index_closes(db, meta.sector_index, sessions) if meta.sector_index else None
     )
@@ -154,7 +173,7 @@ def session_close(
     statement = (
         select(TradingDay.close_at, DailyBar.close)
         .join(DailyBar, DailyBar.day == TradingDay.day)
-        .where(DailyBar.symbol == symbol)
+        .where(DailyBar.symbol == symbol, TradingDay.source == load_symbol(db, symbol).source)
     )
     if as_of is not None:
         statement = statement.where(TradingDay.close_at <= as_of)
@@ -187,17 +206,27 @@ def load_events(db: Session, symbol: str) -> list[CorporateEvent]:
 
 def index_return(db: Session, index_code: str, since: datetime, until: datetime) -> float | None:
     """Return of an index between the sessions bracketing two moments."""
+    meta = db.get(IndexMeta, index_code)
+    source = meta.source if meta else SOURCE_REPLAY
     start = db.scalar(
         select(IndexBar.close)
         .join(TradingDay, TradingDay.day == IndexBar.day)
-        .where(IndexBar.index_code == index_code, TradingDay.close_at <= since)
+        .where(
+            IndexBar.index_code == index_code,
+            TradingDay.source == source,
+            TradingDay.close_at <= since,
+        )
         .order_by(IndexBar.day.desc())
         .limit(1)
     )
     end = db.scalar(
         select(IndexBar.close)
         .join(TradingDay, TradingDay.day == IndexBar.day)
-        .where(IndexBar.index_code == index_code, TradingDay.close_at <= until)
+        .where(
+            IndexBar.index_code == index_code,
+            TradingDay.source == source,
+            TradingDay.close_at <= until,
+        )
         .order_by(IndexBar.day.desc())
         .limit(1)
     )
@@ -206,8 +235,8 @@ def index_return(db: Session, index_code: str, since: datetime, until: datetime)
     return end / start - 1.0
 
 
-def market_index(db: Session) -> str:
-    return _market_index(db)
+def market_index(db: Session, source: str = SOURCE_REPLAY) -> str:
+    return _market_index(db, source)
 
 
 def price_on_or_before(db: Session, symbol: str, moment: datetime) -> tuple[datetime, float] | None:
@@ -215,17 +244,25 @@ def price_on_or_before(db: Session, symbol: str, moment: datetime) -> tuple[date
     row = db.execute(
         select(TradingDay.close_at, DailyBar.close)
         .join(DailyBar, DailyBar.day == TradingDay.day)
-        .where(DailyBar.symbol == symbol, TradingDay.close_at <= moment)
+        .where(
+            DailyBar.symbol == symbol,
+            TradingDay.source == load_symbol(db, symbol).source,
+            TradingDay.close_at <= moment,
+        )
         .order_by(TradingDay.day.desc())
         .limit(1)
     ).first()
     return (row[0], row[1]) if row else None
 
 
-def _market_index(db: Session) -> str:
-    code = db.scalar(select(IndexMeta.index_code).where(IndexMeta.is_market.is_(True)))
+def _market_index(db: Session, source: str = SOURCE_REPLAY) -> str:
+    code = db.scalar(
+        select(IndexMeta.index_code).where(
+            IndexMeta.is_market.is_(True), IndexMeta.source == source
+        )
+    )
     if code is None:
-        raise NoMarketData("no index is marked as the market")
+        raise NoMarketData(f"no index is marked as the market for {source}")
     return code
 
 

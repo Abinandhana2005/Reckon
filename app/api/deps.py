@@ -11,6 +11,21 @@ from app.db.models import User
 from app.services.identity import InvalidSession, user_for_token
 
 
+def optional_user(
+    db: Session = Depends(get_db),
+    x_session_token: str | None = Header(default=None, alias=SESSION_HEADER),
+) -> User | None:
+    """The session's user if there is one, otherwise nothing.
+
+    Used where a route is useful without a session -- browsing the fixture
+    catalogue -- but changes behaviour when one is present.
+    """
+    try:
+        return user_for_token(db, x_session_token)
+    except InvalidSession:
+        return None
+
+
 def current_user(
     db: Session = Depends(get_db),
     x_session_token: str | None = Header(default=None, alias=SESSION_HEADER),

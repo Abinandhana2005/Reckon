@@ -8,14 +8,24 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.clock import utcnow
-from app.config import DEFAULT_ANCHOR_SESSIONS_AGO
+from app.config import DEFAULT_ANCHOR_SESSIONS_AGO, SOURCE_LIVE, SOURCE_REPLAY
 from app.db.models import Symbol, UserSymbolAnchor, WatchlistItem
-from app.sources import replay
+from app.sources import live, replay
 from app.sources.replay import load_symbol
 
 
-def list_symbols(db: Session, query: str | None = None, limit: int = 50) -> list[Symbol]:
-    statement = select(Symbol).order_by(Symbol.symbol)
+def list_symbols(
+    db: Session,
+    query: str | None = None,
+    limit: int = 50,
+    source: str = SOURCE_REPLAY,
+) -> list[Symbol]:
+    """The catalogue a user can add from, restricted to their own source.
+
+    Without the filter a demo session could add a live instrument it has no
+    data for, and a live session could add a fictional issuer.
+    """
+    statement = select(Symbol).where(Symbol.source == source).order_by(Symbol.symbol)
     if query:
         pattern = f"%{query.strip().upper()}%"
         statement = statement.where(
@@ -36,6 +46,26 @@ def watched(db: Session, user_id: str) -> list[WatchlistItem]:
 
 def watched_symbols(db: Session, user_id: str) -> list[str]:
     return [item.symbol for item in watched(db, user_id)]
+
+
+def add_for_user(
+    db: Session,
+    user,
+    symbol: str,
+    *,
+    note: str | None = None,
+    anchor_sessions_ago: int = DEFAULT_ANCHOR_SESSIONS_AGO,
+) -> WatchlistItem:
+    """Add a symbol, fetching it first when the user is in live mode.
+
+    A live instrument is unknown to the database until someone asks for it, so
+    its history, indices, quote and events are pulled and stored before it can
+    be watched. Fixture symbols are already there and this is a no-op for them.
+    """
+    code = symbol.strip().upper()
+    if user.data_source == SOURCE_LIVE and db.get(Symbol, code) is None:
+        live.add_instrument(db, code)
+    return add(db, user.id, code, note=note, anchor_sessions_ago=anchor_sessions_ago)
 
 
 def add(

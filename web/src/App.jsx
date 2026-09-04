@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, demoSession, realSession, rememberMode, storedMode } from "./api.js";
 import DemoBar from "./components/DemoBar.jsx";
+import ModeBar from "./components/ModeBar.jsx";
 import { ErrorState, Loading } from "./components/ui.jsx";
 import { link, usePath } from "./router.js";
 import Brief from "./screens/Brief.jsx";
@@ -32,6 +33,7 @@ export default function App() {
   const [detail, setDetail] = useState(null);
   const [detailError, setDetailError] = useState(null);
 
+  const [dataMode, setDataMode] = useState(null);
   const [scenarios, setScenarios] = useState([]);
   const [demoState, setDemoState] = useState({ scenario: DEMO_DEFAULT, stale: false });
 
@@ -47,6 +49,7 @@ export default function App() {
         setTokens((current) => ({ ...current, real }));
         const { count } = await api.watchlist(real);
         setNeedsOnboarding(count === 0);
+        api.mode(real).then(setDataMode).catch(() => setDataMode(null));
 
         // A refresh in the middle of a walkthrough should not drop out of the
         // demo. Which scenario is running is read back from the server, which
@@ -178,6 +181,37 @@ export default function App() {
     }
   }
 
+  async function switchDataMode(next) {
+    setBusy("mode");
+    try {
+      setDataMode(await api.setMode(tokens.real, next));
+      setBrief(null);
+      // The two sources hold different instruments, so what was on screen for
+      // one says nothing about the other.
+      const { count } = await api.watchlist(tokens.real);
+      setNeedsOnboarding(count === 0);
+      go(count === 0 ? "/watchlist" : "/");
+      if (count > 0) await loadBrief();
+    } catch (error) {
+      setBriefError(error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function refreshLive() {
+    setBusy("mode");
+    try {
+      await api.refreshLive(tokens.real);
+      setBrief(null);
+      await loadBrief();
+    } catch (error) {
+      setBriefError(error);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function leaveDemo() {
     setBrief(null);
     rememberMode("real");
@@ -232,7 +266,7 @@ export default function App() {
       path={path}
       inDemo={inDemo}
       demo={
-        inDemo && (
+        inDemo ? (
           <DemoBar
             available={scenarios}
             active={demoState}
@@ -240,6 +274,13 @@ export default function App() {
             onScenario={pickScenario}
             onStale={toggleStale}
             onLeave={leaveDemo}
+          />
+        ) : (
+          <ModeBar
+            state={dataMode}
+            busy={busy === "mode"}
+            onSwitch={switchDataMode}
+            onRefresh={refreshLive}
           />
         )
       }
@@ -255,6 +296,7 @@ export default function App() {
       ) : path === "/watchlist" ? (
         <Watchlist
           token={token}
+          live={!inDemo && dataMode?.mode === "live"}
           onDone={() => go("/")}
           onChanged={() => {
             setBrief(null);

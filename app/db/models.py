@@ -47,6 +47,10 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_open_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Which market data this user's watchlist is read from. Demo and live
+    # sessions are different users, so this keeps their data apart.
+    data_source: Mapped[str] = mapped_column(String(8), default="replay")
+
     # Reserved for the credentialed sign-in the plan defers. Guest sessions need
     # no credentials, so both stay null rather than holding an empty password.
     email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True)
@@ -67,12 +71,16 @@ class SessionToken(Base):
 class Symbol(Base):
     __tablename__ = "symbols"
 
-    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    sector_index: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    sector_index: Mapped[str | None] = mapped_column(String(32), nullable=True)
     isin: Mapped[str | None] = mapped_column(String(12), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="ACTIVE")
     listed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str] = mapped_column(String(8), default="replay", index=True)
+    # The provider's own identifier, needed to fetch anything about a live
+    # instrument. Null for fixture symbols, which no provider knows about.
+    instrument_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class WatchlistItem(Base):
@@ -82,7 +90,7 @@ class WatchlistItem(Base):
         String(32), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     symbol: Mapped[str] = mapped_column(
-        String(16), ForeignKey("symbols.symbol"), primary_key=True
+        String(24), ForeignKey("symbols.symbol"), primary_key=True
     )
     added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -90,9 +98,17 @@ class WatchlistItem(Base):
 
 
 class TradingDay(Base):
+    """The session calendar, kept per source.
+
+    Part of the primary key rather than a plain column: the fixture's synthetic
+    calendar and the exchange's real one overlap on most weekdays, and a shared
+    calendar would let live data move the moment a demo brief is computed for.
+    """
+
     __tablename__ = "trading_days"
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
+    source: Mapped[str] = mapped_column(String(8), primary_key=True, default="replay")
     close_at: Mapped[datetime] = mapped_column(DateTime)
 
 
@@ -100,7 +116,7 @@ class DailyBar(Base):
     __tablename__ = "daily_bars"
 
     symbol: Mapped[str] = mapped_column(
-        String(16), ForeignKey("symbols.symbol"), primary_key=True
+        String(24), ForeignKey("symbols.symbol"), primary_key=True
     )
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     close: Mapped[float] = mapped_column(Float)
@@ -111,7 +127,7 @@ class DailyBar(Base):
 class IndexBar(Base):
     __tablename__ = "index_bars"
 
-    index_code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    index_code: Mapped[str] = mapped_column(String(32), primary_key=True)
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     close: Mapped[float] = mapped_column(Float)
 
@@ -126,9 +142,11 @@ class IndexMeta(Base):
 
     __tablename__ = "indices"
 
-    index_code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    index_code: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[str] = mapped_column(String(64))
     is_market: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(8), default="replay", index=True)
+    instrument_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class CorporateEventRow(Base):
@@ -139,7 +157,7 @@ class CorporateEventRow(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     symbol: Mapped[str] = mapped_column(
-        String(16), ForeignKey("symbols.symbol"), index=True
+        String(24), ForeignKey("symbols.symbol"), index=True
     )
     occurred_on: Mapped[date] = mapped_column(Date)
     kind: Mapped[str] = mapped_column(String(16))
@@ -152,7 +170,7 @@ class QuoteRow(Base):
     __tablename__ = "quotes"
 
     symbol: Mapped[str] = mapped_column(
-        String(16), ForeignKey("symbols.symbol"), primary_key=True
+        String(24), ForeignKey("symbols.symbol"), primary_key=True
     )
     price: Mapped[float] = mapped_column(Float)
     event_time: Mapped[datetime] = mapped_column(DateTime)
@@ -169,7 +187,7 @@ class UserSymbolAnchor(Base):
         String(32), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     symbol: Mapped[str] = mapped_column(
-        String(16), ForeignKey("symbols.symbol"), primary_key=True
+        String(24), ForeignKey("symbols.symbol"), primary_key=True
     )
     anchor_at: Mapped[datetime] = mapped_column(DateTime)
     anchor_price: Mapped[float] = mapped_column(Float)
@@ -220,7 +238,7 @@ class VerdictRow(Base):
     user_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("users.id", ondelete="CASCADE")
     )
-    symbol: Mapped[str] = mapped_column(String(16), ForeignKey("symbols.symbol"))
+    symbol: Mapped[str] = mapped_column(String(24), ForeignKey("symbols.symbol"))
     computed_for_anchor: Mapped[datetime] = mapped_column(DateTime)
     verdict: Mapped[str] = mapped_column(String(16))
     epistemic: Mapped[str] = mapped_column(String(16))

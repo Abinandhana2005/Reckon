@@ -19,10 +19,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from app.config import DATABASE_URL, DEV_ENDPOINTS_ENABLED, WEB_DIST
+from app.config import DATABASE_URL, DEV_ENDPOINTS_ENABLED, WEB_DIST, live_enabled
 from app.db.base import Base, SessionLocal, engine, get_db
 from app.db.seed import is_seeded, seed
-from app.api.routes import briefing, dev, session, watchlist
+from app.api.routes import briefing, dev, live, session, watchlist
 
 
 @asynccontextmanager
@@ -75,6 +75,7 @@ def create_app(
     application.include_router(session.router)
     application.include_router(watchlist.router)
     application.include_router(briefing.router)
+    application.include_router(live.router)
     if dev_endpoints:
         application.include_router(dev.router)
 
@@ -88,6 +89,7 @@ def create_app(
             "database": DATABASE_URL.split("://", 1)[0],
             "dev_endpoints": dev_endpoints,
             "frontend": (web_dist / "index.html").is_file(),
+            "live_available": live_enabled(),
         }
 
     mount_frontend(application, web_dist)

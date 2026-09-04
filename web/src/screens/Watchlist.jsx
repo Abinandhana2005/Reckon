@@ -1,35 +1,65 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { ErrorState, Loading } from "../components/ui.jsx";
 
-/** Search, add, remove. Nothing else belongs on this screen. */
-export default function Watchlist({ token, onDone, onChanged }) {
+/**
+ * Search, add, remove. Nothing else belongs on this screen.
+ *
+ * The fixture universe is sixteen issuers and is filtered in the browser. The
+ * live one is every NSE equity, so searching it is the server's job and the
+ * query is debounced rather than sent per keystroke.
+ */
+export default function Watchlist({ token, live, onDone, onChanged }) {
   const [query, setQuery] = useState("");
   const [catalogue, setCatalogue] = useState(null);
   const [watched, setWatched] = useState(null);
   const [error, setError] = useState(null);
   const [pending, setPending] = useState(null);
+  const [searching, setSearching] = useState(false);
 
-  async function refresh() {
-    try {
-      const [symbols, list] = await Promise.all([
-        api.symbols(token),
-        api.watchlist(token),
-      ]);
-      setCatalogue(symbols.symbols);
-      setWatched(new Set(list.items.map((item) => item.symbol)));
-    } catch (caught) {
-      setError(caught);
-    }
-  }
+  const loadCatalogue = useCallback(
+    async (term) => {
+      const body = await api.symbols(token, live ? term : undefined);
+      setCatalogue(body.symbols);
+    },
+    [token, live],
+  );
+
+  const refresh = useCallback(
+    async (term = "") => {
+      try {
+        const [, list] = await Promise.all([loadCatalogue(term), api.watchlist(token)]);
+        setWatched(new Set(list.items.map((item) => item.symbol)));
+      } catch (caught) {
+        setError(caught);
+      }
+    },
+    [loadCatalogue, token],
+  );
 
   useEffect(() => {
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+    setCatalogue(null);
+    refresh("");
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!live) return undefined;
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        await loadCatalogue(query);
+      } catch (caught) {
+        setError(caught);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, live, loadCatalogue]);
 
   const results = useMemo(() => {
     if (!catalogue) return [];
+    if (live) return catalogue;
     const needle = query.trim().toLowerCase();
     if (!needle) return catalogue;
     return catalogue.filter(
@@ -37,14 +67,16 @@ export default function Watchlist({ token, onDone, onChanged }) {
         row.symbol.toLowerCase().includes(needle) ||
         row.name.toLowerCase().includes(needle),
     );
-  }, [catalogue, query]);
+  }, [catalogue, query, live]);
 
   async function toggle(symbol, isWatched) {
     setPending(symbol);
+    setError(null);
     try {
       if (isWatched) await api.remove(token, symbol);
       else await api.add(token, symbol);
-      await refresh();
+      const list = await api.watchlist(token);
+      setWatched(new Set(list.items.map((item) => item.symbol)));
       onChanged?.();
     } catch (caught) {
       setError(caught);
@@ -53,27 +85,38 @@ export default function Watchlist({ token, onDone, onChanged }) {
     }
   }
 
-  if (error) return <ErrorState error={error} onRetry={refresh} />;
+  if (error && !catalogue) return <ErrorState error={error} onRetry={() => refresh(query)} />;
   if (!catalogue || !watched) return <Loading lines={5} />;
 
   return (
     <div>
       <h1 className="display">Your watchlist</h1>
       <p className="muted">
-        {watched.size} {watched.size === 1 ? "stock" : "stocks"} followed.
+        {watched.size} {watched.size === 1 ? "stock" : "stocks"} followed
+        {live ? " · live market data" : " · sample data"}.
       </p>
 
       <input
         className="search"
         type="search"
-        placeholder="Search by name or ticker"
+        placeholder={live ? "Search NSE by name or ticker" : "Search by name or ticker"}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         aria-label="Search symbols"
       />
 
-      {results.length === 0 && (
-        <p className="state">Nothing matches “{query}”.</p>
+      {error && (
+        <p className="small" style={{ color: "var(--amber)" }}>
+          {error.message}
+        </p>
+      )}
+
+      {searching && <p className="small muted">Searching…</p>}
+
+      {results.length === 0 && !searching && (
+        <p className="state">
+          {query ? `Nothing matches “${query}”.` : "Nothing to show."}
+        </p>
       )}
 
       <div style={{ marginTop: "1rem" }}>

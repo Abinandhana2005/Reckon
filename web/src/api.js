@@ -130,6 +130,10 @@ export const api = {
       method: "POST",
       body: { symbol, snapshot_id: snapshotId },
     }),
+  mode: (token) => request("/api/mode", { token }),
+  setMode: (token, mode) =>
+    request("/api/mode", { token, method: "POST", body: { mode } }),
+  refreshLive: (token) => request("/api/live/refresh", { token, method: "POST" }),
   scenarios: (token) => request("/api/dev/scenarios", { token }),
   simulation: (token) => request("/api/dev/simulate", { token }),
   simulate: (token, body, mode) =>

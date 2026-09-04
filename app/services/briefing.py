@@ -13,6 +13,7 @@ The two clocks are moved in different places on purpose:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import statistics
 from datetime import datetime
@@ -21,15 +22,24 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.clock import utcnow
+from app.config import SOURCE_LIVE
 from app.api import copy, serialize
 from app.db.models import DailyBar, Symbol, UserSymbolAnchor, VerdictRow
 from app.domain.brief import Brief, assemble
 from app.domain.classifier import ClassificationRequest, classify
-from app.domain.verdicts import Anchor, Classification, Quote
+from app.domain.verdicts import (
+    Anchor,
+    Classification,
+    Epistemic,
+    Evidence,
+    Quote,
+    Reason,
+    Verdict,
+)
 from app.services import simulation as simulation_service
 from app.services import watchlist
 from app.services.simulation import NO_SIMULATION, Simulation
-from app.sources import replay
+from app.sources import live, replay
 
 SPARKLINE_SESSIONS = 60
 
@@ -57,6 +67,14 @@ def classify_symbol(
     quote = replay.load_quote(
         db, symbol, as_of=simulation.as_of, freshness=simulation.freshness_for(symbol)
     )
+    # A live quote is fetched on demand, so it can age between fetches. Judging
+    # that here lets an aging price stop supporting inference on its own,
+    # through the freshness model that already exists, with no background job.
+    if (
+        replay.load_symbol(db, symbol).source == SOURCE_LIVE
+        and simulation.freshness_for(symbol) is None
+    ):
+        quote = live.freshen(quote, now)
     request = ClassificationRequest(
         context=replay.load_context(db, symbol, as_of=simulation.as_of),
         anchor=anchor,
@@ -102,16 +120,24 @@ def build_brief(
     simulation: Simulation | None = None,
 ) -> dict:
     active = simulation if simulation is not None else simulation_service.get(db, user.id)
-    moment = now or active.as_of or replay.replay_now(db)
+    source = user.data_source
+    moment = now or active.as_of or replay.replay_now(db, source)
     symbols = watchlist.watched_symbols(db, user.id)
 
     classifications: list[Classification] = []
     for symbol in symbols:
-        item, anchor, quote = classify_symbol(db, user.id, symbol, moment, active)
+        try:
+            item, anchor, quote = classify_symbol(db, user.id, symbol, moment, active)
+        except (replay.NoMarketData, replay.UnknownSymbol, live.LiveDataUnavailable) as exc:
+            # A provider that failed for one instrument must not cost the reader
+            # the other fifteen. The symbol stays in the brief and stays
+            # accounted for; it simply carries no claim.
+            classifications.append(_no_data(symbol, exc))
+            continue
         _record(db, user.id, item, anchor.at, quote)
         classifications.append(item)
 
-    market_code = replay.market_index(db)
+    market_code = replay.market_index(db, source)
     brief = assemble(
         classifications,
         market_return=_median(c.evidence.market_return for c in classifications),
@@ -123,7 +149,7 @@ def build_brief(
         )
 
     previously_opened = user.last_open_at
-    sessions_since = replay.sessions_between(db, previously_opened, moment)
+    sessions_since = replay.sessions_between(db, previously_opened, moment, source)
 
     # Read before the clock moves, so the header describes the span the user was
     # away rather than an empty one.
@@ -206,7 +232,7 @@ def symbol_detail(
     simulation: Simulation | None = None,
 ) -> dict:
     active = simulation if simulation is not None else simulation_service.get(db, user.id)
-    moment = now or active.as_of or replay.replay_now(db)
+    moment = now or active.as_of or replay.replay_now(db, user.data_source)
     item, anchor, quote = classify_symbol(db, user.id, symbol, moment, active)
     _record(db, user.id, item, anchor.at, quote)
     db.commit()
@@ -238,6 +264,23 @@ def symbol_detail(
         "as_of": moment.isoformat(),
         "simulation": simulation_service.describe(db, active),
     }
+
+
+def _no_data(symbol: str, reason: Exception) -> Classification:
+    """A symbol with no usable data at all.
+
+    The classifier cannot run without prices, so this is assembled here rather
+    than by it -- but it lands in the same taxonomy, in the slot that exists for
+    exactly this: we cannot say. Nothing is inferred and no number is invented.
+    """
+    return Classification(
+        symbol=symbol,
+        verdict=Verdict.CANT_SAY,
+        epistemic=Epistemic.UNKNOWN,
+        reason=Reason.UNTRUSTED_QUOTE,
+        evidence=Evidence(sessions_away=0, quote_source=f"unavailable: {reason}"),
+        snapshot_id=hashlib.sha256(f"nodata|{symbol}".encode()).hexdigest()[:16],
+    )
 
 
 def _record(

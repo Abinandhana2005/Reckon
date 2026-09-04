@@ -32,6 +32,34 @@ DEV_ENDPOINTS_ENABLED = os.environ.get("RECKON_DEV_ENDPOINTS", "1") not in {"0",
 # which is why serving it is conditional rather than assumed.
 WEB_DIST = Path(os.environ.get("RECKON_WEB_DIST", str(PROJECT_ROOT / "web" / "dist")))
 
+# Which market data a user's watchlist is built from. Stored per user, so a
+# demo session and a live one can share a database without seeing each other's
+# instruments, sessions or indices.
+SOURCE_REPLAY = "replay"
+SOURCE_LIVE = "live"
+
+# Live mode is configured entirely by this variable. Absent means live mode is
+# simply not offered; nothing else in the app changes.
+UPSTOX_ACCESS_TOKEN = os.environ.get("UPSTOX_ACCESS_TOKEN") or None
+UPSTOX_BASE_URL = os.environ.get("UPSTOX_BASE_URL", "https://api.upstox.com/v2")
+UPSTOX_INSTRUMENTS_URL = os.environ.get(
+    "UPSTOX_INSTRUMENTS_URL",
+    "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
+)
+UPSTOX_TIMEOUT_SECONDS = float(os.environ.get("UPSTOX_TIMEOUT_SECONDS", "12"))
+
+# Enough history for the classifier's 60 rolling windows plus its 70-bar floor.
+LIVE_HISTORY_SESSIONS = int(os.environ.get("RECKON_LIVE_HISTORY_SESSIONS", "220"))
+
+# A live quote older than this is not a current price. The existing freshness
+# model turns that into CANT_SAY rather than a stale-but-confident answer.
+LIVE_QUOTE_STALE_HOURS = float(os.environ.get("RECKON_LIVE_QUOTE_STALE_HOURS", "36"))
+
+
+def live_enabled() -> bool:
+    return bool(UPSTOX_ACCESS_TOKEN)
+
+
 # A newly watched symbol needs a reference point. One session back means the
 # first brief a user sees describes the most recent session rather than nothing.
 DEFAULT_ANCHOR_SESSIONS_AGO = 1
