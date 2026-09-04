@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+.env
+.env.*
+
+.vscode/
+.idea/
+.DS_Store
+
+# Live-mode pulls land here. Exchange data is licensed for internal use only and must
+# never enter the repo; the committed fixture under fixtures/ is synthetic and is tracked.
+data/live/

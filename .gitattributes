@@ -1,0 +1,8 @@
+# Normalise to LF in the repo and on checkout, overriding a developer's core.autocrlf.
+# fixtures/market.json is compared byte-for-byte against freshly generated output, so a
+# CRLF checkout on Windows would fail the determinism test on an otherwise clean clone.
+* text=auto eol=lf
+*.json text eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
