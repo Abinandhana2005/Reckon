@@ -142,6 +142,4 @@ export const api = {
       method: "POST",
       body: body || {},
     }),
-  resetSimulation: (token) =>
-    request("/api/dev/simulate", { token, method: "DELETE" }),
 };

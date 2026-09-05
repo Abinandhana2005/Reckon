@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.clock import utcnow
-from app.config import DEFAULT_ANCHOR_SESSIONS_AGO, FIXTURE_PATH
+from app.config import DEFAULT_ANCHOR_SESSIONS_AGO, FIXTURE_PATH, SOURCE_REPLAY
 from app.db.models import SimulationState, TradingDay
 from app.domain.verdicts import Freshness
 
@@ -88,7 +88,18 @@ def resolve_scenario(label: str) -> date:
 
 
 def session_close_at(db: Session, day: date) -> datetime:
-    close_at = db.scalar(select(TradingDay.close_at).where(TradingDay.day == day))
+    """The fixture session closing on this date.
+
+    Scoped to the fixture explicitly. The live calendar covers the same real
+    weekdays, so an unscoped lookup could answer a demo scenario with a session
+    that came from the exchange -- and the two calendars do not even close at
+    the same moment.
+    """
+    close_at = db.scalar(
+        select(TradingDay.close_at).where(
+            TradingDay.day == day, TradingDay.source == SOURCE_REPLAY
+        )
+    )
     if close_at is None:
         raise NoSuchSession(str(day))
     return close_at

@@ -18,7 +18,8 @@ from sqlalchemy import Engine, inspect, text
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 INITIAL_REVISION = "b1a573c914fc"
 SIMULATION_REVISION = "a8c5a409897f"
-HEAD_REVISION = "0f3de7537fad"
+LIVE_SOURCE_REVISION = "0f3de7537fad"
+HEAD_REVISION = "c4a1d9e02b17"
 
 
 def _config(engine: Engine) -> Config:
@@ -56,7 +57,13 @@ def _revision_for_unstamped_schema(engine: Engine) -> str | None:
         "source" in symbol_columns,
         "source" in trading_day_columns,
     } == {True}:
-        return HEAD_REVISION
+        # Stamped at the revision the shape proves, not at head: the remaining
+        # migrations then run normally and add what is genuinely missing.
+        return (
+            HEAD_REVISION
+            if "user_source_visit" in tables
+            else LIVE_SOURCE_REVISION
+        )
     if "simulation_state" in tables:
         return SIMULATION_REVISION
     return INITIAL_REVISION
@@ -74,11 +81,7 @@ def ensure_schema(engine: Engine) -> None:
 
     if "alembic_version" not in inspector.get_table_names():
         revision = _revision_for_unstamped_schema(engine)
-        if revision == HEAD_REVISION:
-            # A database made with the current metadata is already compatible;
-            # only its bookkeeping is missing.
-            command.stamp(_config(engine), HEAD_REVISION)
-        elif revision is not None:
+        if revision is not None:
             command.stamp(_config(engine), revision)
 
     _remove_orphaned_batch_tables(engine)

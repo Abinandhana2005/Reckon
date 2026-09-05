@@ -12,7 +12,7 @@ export function Sparkline({ points, anchorDate }) {
 
   const width = 600;
   const height = 80;
-  const closes = points.map((p) => p.close);
+  const closes = points.map((point) => point.close);
   const low = Math.min(...closes);
   const high = Math.max(...closes);
   const span = high - low || 1;
@@ -20,10 +20,15 @@ export function Sparkline({ points, anchorDate }) {
   const x = (index) => (index / (points.length - 1)) * width;
   const y = (close) => height - ((close - low) / span) * (height - 8) - 4;
 
-  const path = points.map((p, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(p.close).toFixed(1)}`).join(" ");
+  const path = points
+    .map(
+      (point, index) =>
+        `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.close).toFixed(1)}`,
+    )
+    .join(" ");
 
   const anchorIndex = anchorDate
-    ? points.findIndex((p) => p.date >= anchorDate.slice(0, 10))
+    ? points.findIndex((point) => point.date >= anchorDate.slice(0, 10))
     : -1;
 
   return (

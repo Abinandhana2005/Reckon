@@ -82,6 +82,15 @@ def every_string() -> list[str]:
             copy.headline(item, sector_name="Banking"),
             copy.detail(item, sector_name="Banking"),
             copy.why_not_flagged(item, sector_name="Banking"),
+            copy.start_here_line(item),
+            copy.uncertainty_label(reason),
+            copy.uncertainty_detail(reason),
+        ]
+        produced += [
+            step["label"] for step in copy.decision_trace(item, sector_name="Banking")
+        ]
+        produced += [
+            step["note"] for step in copy.decision_trace(item, sector_name="Banking")
         ]
     for size in (1, 2, 7):
         produced += [
@@ -92,6 +101,13 @@ def every_string() -> list[str]:
         ]
     for needs in (0, 3):
         produced.append(copy.accounting_line({"checked": 16, "needs_you": needs}))
+    for counts in (
+        {"checked": 16, "needs_you": 1, "explained": 12, "quiet": 2, "cant_say": 1},
+        {"checked": 1, "needs_you": 0, "explained": 0, "quiet": 1, "cant_say": 0},
+        {"checked": 3, "needs_you": 3, "explained": 0, "quiet": 0, "cant_say": 0},
+        {"checked": 0, "needs_you": 0, "explained": 0, "quiet": 0, "cant_say": 0},
+    ):
+        produced.append(copy.silence_report(counts))
     produced += list(copy.EPISTEMIC_LABEL.values())
     return produced
 
@@ -146,3 +162,48 @@ def test_fixture_event_wording_is_also_clean() -> None:
     )
     for event in fixture["events"]:
         assert not words(event["detail"]) & copy.BANNED_WORDS, event
+
+
+def test_the_silence_report_accounts_for_every_symbol_it_was_given() -> None:
+    line = copy.silence_report(
+        {"checked": 16, "needs_you": 1, "explained": 12, "quiet": 2, "cant_say": 1}
+    )
+
+    assert line == (
+        "16 stocks checked. 12 moved with the market or its sector, 2 were quiet, "
+        "1 could not be evaluated and 1 needs your attention."
+    )
+
+
+@pytest.mark.parametrize("verdict,epistemic,reason", CASES)
+def test_every_verdict_has_a_complete_decision_trace(verdict, epistemic, reason) -> None:
+    """Six steps, always, whatever the verdict -- a skipped check is still shown."""
+    trace = copy.decision_trace(build(verdict, epistemic, reason), sector_name="Banking")
+
+    assert [step["key"] for step in trace] == [
+        "data", "event", "own", "market", "sector", "verdict"
+    ]
+    assert all(step["note"] for step in trace)
+    assert trace[-1]["status"] == copy.DECIDED
+
+
+def test_a_cant_say_trace_stops_at_data_quality() -> None:
+    trace = copy.decision_trace(
+        build(Verdict.CANT_SAY, Epistemic.UNKNOWN, Reason.UNTRUSTED_QUOTE)
+    )
+    by_key = {step["key"]: step for step in trace}
+
+    assert by_key["data"]["status"] == copy.DECIDED
+    assert by_key["event"]["status"] == copy.SKIPPED
+    assert by_key["market"]["status"] == copy.SKIPPED
+
+
+def test_a_with_sector_trace_shows_the_market_check_passing_first() -> None:
+    trace = copy.decision_trace(
+        build(Verdict.WITH_SECTOR, Epistemic.INFERRED, Reason.TRACKED_SECTOR),
+        sector_name="Banking",
+    )
+    by_key = {step["key"]: step for step in trace}
+
+    assert by_key["market"]["status"] == copy.PASSED
+    assert by_key["sector"]["status"] == copy.DECIDED

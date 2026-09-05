@@ -23,3 +23,6 @@ data/live/
 # Frontend build output and dependencies.
 web/node_modules/
 web/dist/
+
+# yfinance writes its ticker/cookie cache here.
+.yf-cache-live/

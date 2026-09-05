@@ -3,14 +3,22 @@
 Three guarantees live in this file's keys and are relied on by the services:
 
   1. Adding a watched symbol twice is one row      -- PK(user_id, symbol)
-  2. A late quote never overwrites a newer one     -- guarded UPDATE on quotes
+  2. A late quote never overwrites a newer one     -- guarded UPDATE in live._store_quote
   3. An anchor never moves backwards               -- guarded UPDATE on anchors
 
-Two clocks are stored separately and deliberately. `users.last_open_at` is
-narrative ("you last looked on Tuesday") and moves whenever a brief is read.
+Three clocks are stored separately and deliberately.
+
+`users.last_open_at` is the last time this person opened Reckon at all.
+
+`user_source_visit.last_open_at` is the last time they opened it *on one data
+source*, and is the one the brief means by "you last checked". It is per source
+because Live and Sample run on different calendars: a Sample visit stamped in
+the fixture's February would otherwise be read as the start of a Live window
+and describe six months of real sessions the user never missed.
+
 `user_symbol_anchor.anchor_at` is the comparison point and moves only when the
-user acknowledges a specific snapshot. Collapsing them would mark a symbol read
-merely because the app was opened.
+user acknowledges a specific snapshot. Collapsing any of them would mark a
+symbol read merely because the app was opened.
 """
 
 from __future__ import annotations
@@ -55,6 +63,23 @@ class User(Base):
     # no credentials, so both stay null rather than holding an empty password.
     email: Mapped[str | None] = mapped_column(String(320), unique=True, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class UserSourceVisit(Base):
+    """When this user last opened Reckon on one data source.
+
+    Written after a brief has been assembled successfully, never before: the
+    brief has to be built against the *previous* visit, and a read that fails
+    must leave that previous visit available for the next attempt.
+    """
+
+    __tablename__ = "user_source_visit"
+
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(8), primary_key=True)
+    last_open_at: Mapped[datetime] = mapped_column(DateTime)
 
 
 class SessionToken(Base):

@@ -8,6 +8,7 @@ nothing below this module writes dialect-specific SQL.
 from __future__ import annotations
 
 import os
+import importlib.util
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -16,8 +17,26 @@ FIXTURE_PATH = Path(
     os.environ.get("RECKON_FIXTURE", str(PROJECT_ROOT / "fixtures" / "market.json"))
 )
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", f"sqlite:///{(PROJECT_ROOT / 'reckon.db').as_posix()}"
+
+def _normalize_database_url(url: str) -> str:
+    """Route a bare postgres URL to the driver this app actually installs.
+
+    requirements.txt pins ``psycopg`` (v3), but SQLAlchemy's default dialect
+    for a plain ``postgresql://`` -- and for the ``postgres://`` scheme Neon
+    and Heroku both hand out -- is ``psycopg2``, which is not installed. Left
+    unnormalized, a deployment configured with the connection string exactly
+    as the provider gives it crashes on the first request with
+    ``ModuleNotFoundError: No module named 'psycopg2'``.
+    """
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
+DATABASE_URL = _normalize_database_url(
+    os.environ.get("DATABASE_URL", f"sqlite:///{(PROJECT_ROOT / 'reckon.db').as_posix()}")
 )
 
 SESSION_HEADER = "X-Session-Token"
@@ -39,14 +58,9 @@ SOURCE_REPLAY = "replay"
 SOURCE_LIVE = "live"
 
 # Live mode is configured entirely by this variable. Absent means live mode is
-# simply not offered; nothing else in the app changes.
-UPSTOX_ACCESS_TOKEN = os.environ.get("UPSTOX_ACCESS_TOKEN") or None
-UPSTOX_BASE_URL = os.environ.get("UPSTOX_BASE_URL", "https://api.upstox.com/v2")
-UPSTOX_INSTRUMENTS_URL = os.environ.get(
-    "UPSTOX_INSTRUMENTS_URL",
-    "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
-)
-UPSTOX_TIMEOUT_SECONDS = float(os.environ.get("UPSTOX_TIMEOUT_SECONDS", "12"))
+# simply not offered; nothing else in the app changes. Yahoo is the only
+# supported live provider.
+LIVE_PROVIDER = os.environ.get("RECKON_LIVE_PROVIDER", "yahoo").strip().lower()
 
 # Enough history for the classifier's 60 rolling windows plus its 70-bar floor.
 LIVE_HISTORY_SESSIONS = int(os.environ.get("RECKON_LIVE_HISTORY_SESSIONS", "220"))
@@ -57,8 +71,27 @@ LIVE_QUOTE_STALE_HOURS = float(os.environ.get("RECKON_LIVE_QUOTE_STALE_HOURS", "
 
 
 def live_enabled() -> bool:
-    return bool(UPSTOX_ACCESS_TOKEN)
+    if LIVE_PROVIDER == "yahoo":
+        return importlib.util.find_spec("yfinance") is not None
+    return False
 
+
+def live_provider_name() -> str:
+    return LIVE_PROVIDER if LIVE_PROVIDER == "yahoo" else "unknown"
+
+
+def live_unavailable_reason() -> str | None:
+    if live_enabled():
+        return None
+    if LIVE_PROVIDER == "yahoo":
+        return "yfinance is not installed"
+    return f"unsupported live provider: {LIVE_PROVIDER}"
+
+
+# How long a gap between brief reads counts as leaving and coming back.
+# "Last checked" means the last time someone opened Reckon, so re-reading the
+# brief a minute later must not overwrite the visit being described.
+VISIT_IDLE_MINUTES = int(os.environ.get("RECKON_VISIT_IDLE_MINUTES", "30"))
 
 # A newly watched symbol needs a reference point. One session back means the
 # first brief a user sees describes the most recent session rather than nothing.

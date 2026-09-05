@@ -7,12 +7,12 @@ it is why swapping replay for a live feed later changes nothing above it.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import SOURCE_REPLAY
+from app.config import SOURCE_LIVE, SOURCE_REPLAY
 from app.db.models import (
     CorporateEventRow,
     DailyBar,
@@ -34,6 +34,38 @@ class NoMarketData(LookupError):
     """The database holds no sessions; nothing can be classified."""
 
 
+LIVE_SESSION_CLOSE_UTC = time(10, 0)
+
+
+def session_close_at(day: date, source: str = SOURCE_REPLAY) -> datetime:
+    """Return a comparable naive-UTC close timestamp for a source session.
+
+    Fixture timestamps are synthetic and stay at 15:30. Live NSE closes at
+    15:30 IST, which is 10:00 UTC; using one convention prevents an in-progress
+    live session from becoming the authoritative analysis endpoint.
+    """
+    close = LIVE_SESSION_CLOSE_UTC if source == SOURCE_LIVE else time(15, 30)
+    return datetime.combine(day, close)
+
+
+def latest_completed_session(
+    db: Session, now: datetime, source: str = SOURCE_REPLAY
+) -> datetime:
+    """Find the latest source session whose close is not in the future."""
+    rows = list(
+        db.execute(
+            select(TradingDay.day)
+            .where(TradingDay.source == source)
+            .order_by(TradingDay.day.desc())
+        )
+    )
+    for (day,) in rows:
+        close = session_close_at(day, source)
+        if close <= now:
+            return close
+    raise NoMarketData(f"no completed trading days recorded for {source}")
+
+
 def replay_now(db: Session, source: str = SOURCE_REPLAY) -> datetime:
     """The moment this source considers 'now': its last session's close.
 
@@ -49,7 +81,7 @@ def replay_now(db: Session, source: str = SOURCE_REPLAY) -> datetime:
     )
     if last is None:
         raise NoMarketData(f"no trading days recorded for {source}")
-    return last.close_at
+    return session_close_at(last.day, source)
 
 
 def trading_days(db: Session, source: str = SOURCE_REPLAY) -> list[date]:
@@ -68,18 +100,16 @@ def sessions_between(
     """Trading sessions of this source that closed in (start, end]."""
     if start is None:
         return 0
-    return len(
-        list(
-            db.scalars(
-                select(TradingDay.day)
-                .where(
-                    TradingDay.source == source,
-                    TradingDay.close_at > start,
-                    TradingDay.close_at <= end,
-                )
-                .order_by(TradingDay.day)
-            )
+    days = list(
+        db.scalars(
+            select(TradingDay.day)
+            .where(TradingDay.source == source)
+            .order_by(TradingDay.day)
         )
+    )
+    return sum(
+        start < session_close_at(day, source) <= end
+        for day in days
     )
 
 
@@ -147,7 +177,7 @@ def load_quote(
             price=price,
             event_time=event_time,
             freshness=freshness or Freshness.CLOSED,
-            source="replay",
+            source=load_symbol(db, symbol).source,
         )
 
     row = db.get(QuoteRow, symbol)
@@ -171,13 +201,15 @@ def session_close(
     a session it actually traded in.
     """
     statement = (
-        select(TradingDay.close_at, DailyBar.close)
+        select(TradingDay.day, DailyBar.close)
         .join(DailyBar, DailyBar.day == TradingDay.day)
         .where(DailyBar.symbol == symbol, TradingDay.source == load_symbol(db, symbol).source)
     )
     if as_of is not None:
-        statement = statement.where(TradingDay.close_at <= as_of)
-    bars = list(db.execute(statement.order_by(TradingDay.day)).all())
+        statement = statement.where(TradingDay.day <= as_of.date())
+    rows = list(db.execute(statement.order_by(TradingDay.day)).all())
+    source = load_symbol(db, symbol).source
+    bars = [(session_close_at(day, source), close) for day, close in rows]
     if not bars:
         raise UnknownSymbol(f"{symbol} has no price history")
 
@@ -208,27 +240,21 @@ def index_return(db: Session, index_code: str, since: datetime, until: datetime)
     """Return of an index between the sessions bracketing two moments."""
     meta = db.get(IndexMeta, index_code)
     source = meta.source if meta else SOURCE_REPLAY
-    start = db.scalar(
-        select(IndexBar.close)
-        .join(TradingDay, TradingDay.day == IndexBar.day)
-        .where(
-            IndexBar.index_code == index_code,
-            TradingDay.source == source,
-            TradingDay.close_at <= since,
+    rows = list(
+        db.execute(
+            select(TradingDay.day, IndexBar.close)
+            .join(TradingDay, TradingDay.day == IndexBar.day)
+            .where(IndexBar.index_code == index_code, TradingDay.source == source)
+            .order_by(TradingDay.day)
         )
-        .order_by(IndexBar.day.desc())
-        .limit(1)
     )
-    end = db.scalar(
-        select(IndexBar.close)
-        .join(TradingDay, TradingDay.day == IndexBar.day)
-        .where(
-            IndexBar.index_code == index_code,
-            TradingDay.source == source,
-            TradingDay.close_at <= until,
-        )
-        .order_by(IndexBar.day.desc())
-        .limit(1)
+    start = next(
+        (close for day, close in reversed(rows) if session_close_at(day, source) <= since),
+        None,
+    )
+    end = next(
+        (close for day, close in reversed(rows) if session_close_at(day, source) <= until),
+        None,
     )
     if start is None or end is None or start == 0:
         return None
@@ -241,18 +267,22 @@ def market_index(db: Session, source: str = SOURCE_REPLAY) -> str:
 
 def price_on_or_before(db: Session, symbol: str, moment: datetime) -> tuple[datetime, float] | None:
     """The last close for a symbol at or before a moment, with its session time."""
-    row = db.execute(
-        select(TradingDay.close_at, DailyBar.close)
+    rows = list(db.execute(
+        select(TradingDay.day, DailyBar.close)
         .join(DailyBar, DailyBar.day == TradingDay.day)
         .where(
             DailyBar.symbol == symbol,
             TradingDay.source == load_symbol(db, symbol).source,
-            TradingDay.close_at <= moment,
+            TradingDay.day <= moment.date(),
         )
         .order_by(TradingDay.day.desc())
-        .limit(1)
-    ).first()
-    return (row[0], row[1]) if row else None
+    ))
+    source = load_symbol(db, symbol).source
+    for day, price in rows:
+        close = session_close_at(day, source)
+        if close <= moment:
+            return close, price
+    return None
 
 
 def _market_index(db: Session, source: str = SOURCE_REPLAY) -> str:

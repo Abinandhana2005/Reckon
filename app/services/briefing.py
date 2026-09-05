@@ -4,9 +4,11 @@ Briefs are computed on read. Nothing here is precomputed or cached, because a
 verdict is only meaningful against one particular user's anchor, and storing it
 would mean invalidating it every time that anchor moved.
 
-The two clocks are moved in different places on purpose:
+The clocks are moved in different places on purpose:
 
-  `users.last_open_at` moves here, whenever a brief is read. It is narrative.
+  The visit clock (`app.services.visits`) moves here, after a brief has been
+  assembled successfully, and only when the reader has genuinely been away. It
+  is narrative: "you last checked on Tuesday".
   `user_symbol_anchor.anchor_at` moves only in `acknowledge`, and only forward,
   and only to the snapshot the user was actually shown.
 """
@@ -22,9 +24,9 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.clock import utcnow
-from app.config import SOURCE_LIVE
+from app.config import SOURCE_LIVE, live_provider_name
 from app.api import copy, serialize
-from app.db.models import DailyBar, Symbol, UserSymbolAnchor, VerdictRow
+from app.db.models import DailyBar, QuoteRow, Symbol, UserSymbolAnchor, VerdictRow
 from app.domain.brief import Brief, assemble
 from app.domain.classifier import ClassificationRequest, classify
 from app.domain.verdicts import (
@@ -37,9 +39,10 @@ from app.domain.verdicts import (
     Verdict,
 )
 from app.services import simulation as simulation_service
+from app.services import visits
 from app.services import watchlist
 from app.services.simulation import NO_SIMULATION, Simulation
-from app.sources import live, replay
+from app.sources import live, nse, replay
 
 SPARKLINE_SESSIONS = 60
 
@@ -64,19 +67,26 @@ def classify_symbol(
     simulation: Simulation = NO_SIMULATION,
 ) -> tuple[Classification, Anchor, Quote]:
     anchor = _anchor_for(db, user_id, symbol, simulation)
+    source = replay.load_symbol(db, symbol).source
+    quote_as_of = simulation.as_of
+    if source == SOURCE_LIVE and quote_as_of is None:
+        # The authoritative Live brief ends at the latest completed session;
+        # never classify it with an in-progress quote from the wall clock.
+        quote_as_of = now
     quote = replay.load_quote(
-        db, symbol, as_of=simulation.as_of, freshness=simulation.freshness_for(symbol)
+        db, symbol, as_of=quote_as_of, freshness=simulation.freshness_for(symbol)
     )
     # A live quote is fetched on demand, so it can age between fetches. Judging
     # that here lets an aging price stop supporting inference on its own,
     # through the freshness model that already exists, with no background job.
-    if (
-        replay.load_symbol(db, symbol).source == SOURCE_LIVE
-        and simulation.freshness_for(symbol) is None
-    ):
+    if source == SOURCE_LIVE and simulation.freshness_for(symbol) is None:
         quote = live.freshen(quote, now)
     request = ClassificationRequest(
-        context=replay.load_context(db, symbol, as_of=simulation.as_of),
+        # The context is truncated to the same moment as the quote. Leaving it
+        # open-ended let a Live brief price the stock at the last completed
+        # close while measuring the market and sector against a bar for a
+        # session still in progress.
+        context=replay.load_context(db, symbol, as_of=quote_as_of),
         anchor=anchor,
         quote=quote,
         now=now,
@@ -112,6 +122,24 @@ def _anchor_for(
     )
 
 
+def _sync_live_data(db: Session, user_id: str, source: str) -> None:
+    """Bring stored live data up to date before resolving the latest completed session.
+
+    Reckon fetches on demand rather than on a schedule, so without this call
+    "the latest completed session" is bounded by whenever someone last pressed
+    Refresh or added a symbol -- not by whenever this reader actually looked.
+    Calling it here, before that resolution, is what makes opening the brief
+    itself the check "what changed since I last looked".
+
+    A fetch failure must not break the read: `refresh_watchlist` already leaves
+    a symbol's stored data untouched and reports the failure per symbol rather
+    than raising, and an in-progress session's bar is dropped before it ever
+    reaches storage (`live.completed_sessions`), so this call can neither break
+    the brief nor let a still-trading session masquerade as a completed one.
+    """
+    live.refresh_watchlist(db, watchlist.watched_symbols(db, user_id, source=source))
+
+
 def build_brief(
     db: Session,
     user,
@@ -121,8 +149,17 @@ def build_brief(
 ) -> dict:
     active = simulation if simulation is not None else simulation_service.get(db, user.id)
     source = user.data_source
-    moment = now or active.as_of or replay.replay_now(db, source)
-    symbols = watchlist.watched_symbols(db, user.id)
+    visit_at = now or utcnow()
+    if active.active:
+        moment = active.as_of or replay.replay_now(db, source)
+    elif source == SOURCE_LIVE:
+        _sync_live_data(db, user.id, source)
+        moment = replay.latest_completed_session(db, visit_at, source)
+    else:
+        # Sample data has a synthetic clock so its deterministic scenarios do
+        # not drift with the wall clock. It is not presented as live timing.
+        moment = now or replay.replay_now(db, source)
+    symbols = watchlist.watched_symbols(db, user.id, source=source)
 
     classifications: list[Classification] = []
     for symbol in symbols:
@@ -148,7 +185,10 @@ def build_brief(
             f"{len(classifications)} classified but {brief.accounted_for} presented"
         )
 
-    previously_opened = user.last_open_at
+    # Read before the visit is recorded, and read for this source only: a
+    # Sample visit stamped in the fixture's calendar says nothing about how long
+    # the reader has been away from the live market.
+    previously_opened = visits.previous(db, user.id, source)
     sessions_since = replay.sessions_between(db, previously_opened, moment, source)
 
     # Read before the clock moves, so the header describes the span the user was
@@ -159,22 +199,27 @@ def build_brief(
         else None
     )
 
-    # The narrative clock records real visits. A replayed moment is not one, and
-    # stamping it would leave the clock behind the user's actual last look.
-    if not active.active:
-        user.last_open_at = moment
-    db.commit()
-
-    return _payload(
+    # Build the response fully before moving the narrative clock. A failed
+    # brief read must leave the previous visit available for the next attempt.
+    payload = _payload(
         db,
         brief,
         as_of=moment,
+        visit_at=visit_at,
         last_open_at=previously_opened,
         sessions_since_last_open=sessions_since,
         market_index=market_code,
         market_return_since_last_open=market_since_last_open,
         simulation=active,
+        source=source,
+        symbols=symbols,
     )
+    # The narrative clock records real visits. A replayed moment is not one, and
+    # stamping it would leave the clock behind the user's actual last look.
+    if not active.active:
+        visits.record(db, user, source, visit_at if source == SOURCE_LIVE else moment)
+    db.commit()
+    return payload
 
 
 def acknowledge(db: Session, user, symbol: str, snapshot_id: str) -> dict:
@@ -232,7 +277,13 @@ def symbol_detail(
     simulation: Simulation | None = None,
 ) -> dict:
     active = simulation if simulation is not None else simulation_service.get(db, user.id)
-    moment = now or active.as_of or replay.replay_now(db, user.data_source)
+    if active.active:
+        moment = now or active.as_of or replay.replay_now(db, user.data_source)
+    elif user.data_source == SOURCE_LIVE:
+        _sync_live_data(db, user.id, user.data_source)
+        moment = replay.latest_completed_session(db, now or utcnow(), SOURCE_LIVE)
+    else:
+        moment = now or replay.replay_now(db, user.data_source)
     item, anchor, quote = classify_symbol(db, user.id, symbol, moment, active)
     _record(db, user.id, item, anchor.at, quote)
     db.commit()
@@ -261,7 +312,19 @@ def symbol_detail(
         "sparkline": [
             {"date": day.isoformat(), "close": close} for day, close in reversed(bars)
         ],
+        "decision_trace": copy.decision_trace(item, sector_name=sector_name),
         "as_of": moment.isoformat(),
+        "data_source": user.data_source,
+        "provenance": _provenance(
+            db,
+            [symbol],
+            source=user.data_source,
+            latest_completed=moment,
+            now=now or utcnow(),
+        ),
+        # Reading the detail is not a visit, so this reports the stored one and
+        # does not move it.
+        "last_open_at": _iso(visits.previous(db, user.id, user.data_source)),
         "simulation": simulation_service.describe(db, active),
     }
 
@@ -355,11 +418,14 @@ def _payload(
     brief: Brief,
     *,
     as_of: datetime,
+    visit_at: datetime,
     last_open_at: datetime | None,
     sessions_since_last_open: int,
     market_index: str,
     market_return_since_last_open: float | None,
     simulation: Simulation,
+    source: str,
+    symbols: list[str],
 ) -> dict:
     names = _names(db)
     index_names = replay.index_names(db)
@@ -397,8 +463,13 @@ def _payload(
         )
 
     counts = brief.counts
+    start_here = brief.needs_you[0] if brief.needs_you else None
     return {
         "as_of": as_of.isoformat(),
+        "data_source": source,
+        "provenance": _provenance(
+            db, symbols, source=source, latest_completed=as_of, now=visit_at
+        ),
         "simulation": simulation_service.describe(db, simulation),
         "last_open_at": last_open_at.isoformat() if last_open_at else None,
         "sessions_since_last_open": sessions_since_last_open,
@@ -414,6 +485,18 @@ def _payload(
         },
         "counts": counts,
         "accounting_line": copy.accounting_line(counts),
+        # The one item worth opening first. Taken from the top of `needs_you`,
+        # which is already ordered by the size of the move, rather than from a
+        # second scoring system that would have to be justified separately.
+        "start_here": (
+            {
+                "card": serialize.card(start_here, names=names, index_names=index_names),
+                "line": copy.start_here_line(start_here),
+            }
+            if start_here is not None
+            else None
+        ),
+        "silence_report": copy.silence_report(counts),
         "needs_you": cards(brief.needs_you),
         "explained": {"count": len(brief.explained), "groups": groups},
         "quiet": {
@@ -425,5 +508,79 @@ def _payload(
             "count": len(brief.cant_say),
             "line": copy.cant_say_line(len(brief.cant_say)),
             "symbols": cards(brief.cant_say),
+            # Grouped by why, so "couldn't evaluate" is a set of stated reasons
+            # rather than a shrug.
+            "reasons": _uncertainty_reasons(brief.cant_say),
         },
+    }
+
+
+def _uncertainty_reasons(items: list[Classification]) -> list[dict]:
+    grouped: dict[Reason, list[str]] = {}
+    for item in items:
+        grouped.setdefault(item.reason, []).append(item.symbol)
+    return [
+        {
+            "reason": reason.value,
+            "label": copy.uncertainty_label(reason),
+            "detail": copy.uncertainty_detail(reason),
+            "symbols": sorted(symbols),
+        }
+        for reason, symbols in sorted(grouped.items(), key=lambda pair: pair[0].value)
+    ]
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment else None
+
+
+def _provenance(
+    db: Session,
+    symbols: list[str],
+    *,
+    source: str,
+    latest_completed: datetime,
+    now: datetime,
+) -> dict:
+    """Expose timing facts without making Sample data look live.
+
+    `now` is the moment this brief is being built for, passed in rather than
+    read from the clock here: a brief assembled for an explicit moment must
+    describe the exchange as it stood then, not as it stands during the call.
+    """
+    if source != SOURCE_LIVE:
+        # Sample data has no fetch and no exchange, so those fields stay absent
+        # rather than being filled with plausible-looking values. Which session
+        # the analysis ran through is still a real fact about it, and the reader
+        # needs it to make sense of the numbers.
+        return {
+            "provider": "Sample fixture",
+            "latest_completed_session_at": latest_completed.isoformat(),
+        }
+
+    rows = list(
+        db.scalars(select(QuoteRow).where(QuoteRow.symbol.in_(symbols)))
+    ) if symbols else []
+    fetched = [row.ingested_at for row in rows if row.ingested_at is not None]
+    # A trusted observation is one Reckon would classify from. A stale or
+    # unavailable quote is still stored, and still shown, but it is not what
+    # "latest available quote" means.
+    observed = [
+        row.event_time
+        for row in rows
+        if row.event_time is not None and row.freshness in {"LIVE", "CLOSED"}
+    ]
+    freshness = sorted({row.freshness for row in rows})
+    return {
+        "provider": f"{live_provider_name().replace('_', ' ').title()} Finance",
+        "data_fetched_at": _iso(max(fetched) if fetched else None),
+        "latest_completed_session_at": latest_completed.isoformat(),
+        "latest_available_quote_at": _iso(max(observed) if observed else None),
+        "quote_freshness": freshness[0] if len(freshness) == 1 else "MIXED",
+        # Regular exchange hours, used for wording only. Which session the
+        # analysis ends at comes from the observed calendar, never from this.
+        "market_state": nse.market_state(now),
+        "stale_symbols": sorted(
+            row.symbol for row in rows if row.freshness in {"STALE", "UNAVAILABLE", "DISPUTED"}
+        ),
     }

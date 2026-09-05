@@ -13,9 +13,10 @@ venv
 # Local SQLite; a deployment uses Postgres via DATABASE_URL.
 *.db
 
-# Frontend sources are built outside the image; only web/dist is served.
+# The frontend is built inside the image's node stage; a host-side
+# node_modules or dist would only be shadowed by that stage's own build.
 web/node_modules
-web/src
+web/dist
 
 tests
 alembic/README

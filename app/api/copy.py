@@ -59,6 +59,22 @@ _CANT_SAY_DETAILS = {
 }
 
 
+_ORDINAL_SUFFIX = {1: "st", 2: "nd", 3: "rd"}
+
+
+def ordinal(value: float) -> str:
+    """A percentile as English reads it: 1st, 22nd, 53rd, 11th.
+
+    Appending "th" to every number is a small thing that makes a careful
+    document look careless, and this text is the product's evidence.
+    """
+    number = int(round(value))
+    if 11 <= number % 100 <= 13:
+        return f"{number}th"
+    suffix = _ORDINAL_SUFFIX.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
 def percent(value: float | None, places: int = 1) -> str:
     if value is None:
         return "unavailable"
@@ -168,15 +184,15 @@ def why_not_flagged(item: Classification, *, sector_name: str | None = None) -> 
     if item.verdict is Verdict.QUIET:
         own = evidence.own
         return (
-            f"Its move ranks at the {own.percentile:.0f}th percentile of its own "
+            f"Its move ranks at the {ordinal(own.percentile)} percentile of its own "
             f"{own.sample_size} comparable spans, and its gap to the market ranks at the "
-            f"{evidence.vs_market.percentile:.0f}th. Neither is unusual."
+            f"{ordinal(evidence.vs_market.percentile)}. Neither is unusual."
         )
 
     if item.verdict is Verdict.WITH_MARKET:
         return (
             f"Its move was unusual for this stock, but the gap to the market ranks at the "
-            f"{evidence.vs_market.percentile:.0f}th percentile of "
+            f"{ordinal(evidence.vs_market.percentile)} percentile of "
             f"{evidence.vs_market.sample_size} comparable spans, which is ordinary. "
             f"{COMPARISON_DISCLAIMER}"
         )
@@ -184,7 +200,7 @@ def why_not_flagged(item: Classification, *, sector_name: str | None = None) -> 
     label = sector_name or evidence.sector_index
     return (
         f"Its move was unusual against the market, but the gap to {label} ranks at the "
-        f"{evidence.vs_sector.percentile:.0f}th percentile of "
+        f"{ordinal(evidence.vs_sector.percentile)} percentile of "
         f"{evidence.vs_sector.sample_size} comparable spans, which is ordinary. "
         f"{COMPARISON_DISCLAIMER}"
     )
@@ -219,3 +235,203 @@ def accounting_line(counts: dict[str, int]) -> str:
     if needs == 0:
         return f"All {checked} {subject} accounted for. Nothing needs you."
     return f"{checked} {subject} checked. {needs} need you."
+
+# --------------------------------------------------------------------------
+# The silence report: what was checked and not surfaced, in real numbers.
+# --------------------------------------------------------------------------
+
+
+def silence_report(counts: dict[str, int]) -> str:
+    """One sentence accounting for every symbol that was not surfaced.
+
+    The product's claim is that nothing was filtered out, so the clauses are
+    built from the same counts the sections are built from. A clause is omitted
+    only when its count is zero, never to shorten the sentence.
+    """
+    checked = counts["checked"]
+    stocks = "stock" if checked == 1 else "stocks"
+    clauses: list[str] = []
+    explained = counts["explained"]
+    if explained:
+        clauses.append(
+            f"{explained} moved with the market or its sector"
+            if explained > 1
+            else "1 moved with the market or its sector"
+        )
+    if counts["quiet"]:
+        clauses.append(f"{counts['quiet']} {'was' if counts['quiet'] == 1 else 'were'} quiet")
+    if counts["cant_say"]:
+        clauses.append(f"{counts['cant_say']} could not be evaluated")
+    if counts["needs_you"]:
+        clauses.append(
+            f"{counts['needs_you']} {'needs' if counts['needs_you'] == 1 else 'need'} your attention"
+        )
+
+    if not clauses:
+        return f"{checked} {stocks} checked."
+    return f"{checked} {stocks} checked. " + _joined(clauses) + "."
+
+
+def _joined(clauses: list[str]) -> str:
+    if len(clauses) == 1:
+        return clauses[0]
+    return f"{', '.join(clauses[:-1])} and {clauses[-1]}"
+
+
+def start_here_line(item: Classification) -> str:
+    """Why this one item is at the top, stated as what the classifier did.
+
+    No score is invented. The brief already orders what needs attention by the
+    size of the move, so the first of those is the item, and this says so.
+    """
+    if item.verdict is Verdict.EVENT:
+        return "A confirmed event outranks every comparison, so this is the first thing to look at."
+    return (
+        "This is the largest move on your watchlist that neither the market nor "
+        "its sector accounts for."
+    )
+
+
+UNCERTAINTY_LABEL = {
+    Reason.UNTRUSTED_QUOTE: "Price could not be trusted",
+    Reason.INSUFFICIENT_HISTORY: "Not enough history",
+    Reason.UNADJUSTABLE_ACTION: "Corporate action could not be adjusted",
+}
+
+UNCERTAINTY_DETAIL = {
+    Reason.UNTRUSTED_QUOTE: (
+        "The latest price was stale, disputed or unavailable, so no comparison was attempted."
+    ),
+    Reason.INSUFFICIENT_HISTORY: (
+        "Fewer sessions are on record than a normal range can be built from."
+    ),
+    Reason.UNADJUSTABLE_ACTION: (
+        "A split, bonus or dividend fell in this window and the factor to restate "
+        "the reference price could not be determined."
+    ),
+}
+
+
+def uncertainty_label(reason: Reason) -> str:
+    return UNCERTAINTY_LABEL.get(reason, "Could not be evaluated")
+
+
+def uncertainty_detail(reason: Reason) -> str:
+    return UNCERTAINTY_DETAIL.get(reason, "No comparison is offered.")
+
+
+# --------------------------------------------------------------------------
+# The decision trace: the checks that ran, in the order they ran.
+# --------------------------------------------------------------------------
+
+PASSED = "PASSED"
+"""The check ran and did not end the classification."""
+
+DECIDED = "DECIDED"
+"""The check ran and produced the verdict."""
+
+SKIPPED = "SKIPPED"
+"""The check never ran, because an earlier one had already decided."""
+
+UNAVAILABLE = "UNAVAILABLE"
+"""The check could not run because the data it needs is not held."""
+
+
+def decision_trace(item: Classification, *, sector_name: str | None = None) -> list[dict]:
+    """Replay the classifier's precedence for one symbol, as a reader can follow it.
+
+    Derived from the retained evidence rather than recomputed, so what is shown
+    is what actually happened. The order is the classifier's own: doubt about
+    the data first, then facts, then the symbol's own range, then the market,
+    then the sector.
+    """
+    evidence = item.evidence
+    verdict = item.verdict
+    decided_early = verdict is Verdict.CANT_SAY
+    steps: list[dict] = []
+
+    steps.append(_step(
+        "data",
+        "Data quality",
+        DECIDED if decided_early else PASSED,
+        _CANT_SAY_DETAILS.get(item.reason, "No comparison is offered.")
+        if decided_early
+        else f"A trusted price and {evidence.history_bars} sessions of history were on record.",
+    ))
+
+    if decided_early:
+        steps += [
+            _step("event", "Event check", SKIPPED, "Not reached."),
+            _step("own", "Own movement", SKIPPED, "Not reached."),
+            _step("market", "Market comparison", SKIPPED, "Not reached."),
+            _step("sector", "Sector comparison", SKIPPED, "Not reached."),
+            _step("verdict", "Final verdict", DECIDED, headline(item, sector_name=sector_name)),
+        ]
+        return steps
+
+    events = evidence.events_in_window or evidence.events_upcoming
+    steps.append(_step(
+        "event",
+        "Event check",
+        DECIDED if verdict is Verdict.EVENT else PASSED,
+        events[0].detail if verdict is Verdict.EVENT and events
+        else "No corporate action is on record for this window.",
+    ))
+
+    if verdict is Verdict.EVENT:
+        steps += [
+            _step("own", "Own movement", SKIPPED, "A recorded event outranks every comparison."),
+            _step("market", "Market comparison", SKIPPED, "Not reached."),
+            _step("sector", "Sector comparison", SKIPPED, "Not reached."),
+            _step("verdict", "Final verdict", DECIDED, headline(item, sector_name=sector_name)),
+        ]
+        return steps
+
+    own = evidence.own
+    steps.append(_step(
+        "own",
+        "Own movement",
+        PASSED,
+        f"It {movement(evidence.adjusted_return)}, which ranks at the "
+        f"{ordinal(own.percentile)} percentile of its own {own.sample_size} comparable spans."
+        if own
+        else "No baseline was available.",
+    ))
+
+    market = evidence.vs_market
+    steps.append(_step(
+        "market",
+        "Market comparison",
+        DECIDED if verdict in (Verdict.WITH_MARKET, Verdict.QUIET) else PASSED,
+        f"The market {movement(evidence.market_return)}. The gap ranks at the "
+        f"{ordinal(market.percentile)} percentile, which is "
+        f"{'ordinary' if market.percentile < 90 else 'unusual'}."
+        if market
+        else "No market comparison was available.",
+    ))
+
+    sector = evidence.vs_sector
+    if not evidence.sector_available or sector is None:
+        sector_note = "No sector index is held for this stock, so this comparison was not available."
+        sector_status = UNAVAILABLE
+    else:
+        sector_note = (
+            f"{sector_name or evidence.sector_index} "
+            f"{movement(evidence.sector_return)}. The gap ranks at the "
+            f"{ordinal(sector.percentile)} percentile, which is "
+            f"{'ordinary' if sector.percentile < 90 else 'unusual'}."
+        )
+        sector_status = DECIDED if verdict is Verdict.WITH_SECTOR else PASSED
+    if verdict in (Verdict.WITH_MARKET, Verdict.QUIET):
+        sector_status = SKIPPED
+        sector_note = "Not reached: the market comparison had already accounted for the move."
+    steps.append(_step("sector", "Sector comparison", sector_status, sector_note))
+
+    steps.append(_step(
+        "verdict", "Final verdict", DECIDED, headline(item, sector_name=sector_name)
+    ))
+    return steps
+
+
+def _step(key: str, label: str, status: str, note: str) -> dict:
+    return {"key": key, "label": label, "status": status, "note": note}

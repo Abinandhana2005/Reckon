@@ -3,9 +3,14 @@ import React from "react";
 /**
  * The demo's only control surface.
  *
- * Deliberately a thin strip rather than a panel: the demo exists to show the
- * product, so the product should stay the thing on screen. It appears only in
- * Demo Mode and never in a real session.
+ * Distinct by inversion rather than by tint: a full-bleed dark band directly
+ * under the header, so a judge can never mistake a prepared scenario for the
+ * reader's own watchlist. The brief below it renders exactly as it does in a
+ * real session -- the point of the demo is to show the product, not a
+ * substitute for it.
+ *
+ * The demo runs as a separate guest session on the server, so nothing done here
+ * writes to a real watchlist or moves a real anchor.
  */
 
 export const SCENARIOS = [
@@ -21,14 +26,23 @@ export default function DemoBar({ available, active, busy, onScenario, onStale, 
   );
 
   return (
-    <div className="demobar">
-      <div className="wrap demobar-inner">
-        <strong>Demo</strong>
-        <div className="scenarios">
+    <div className="demoband">
+      <div className="demoband-inner">
+        <div className="demoband-top">
+          <span className="demoband-chip">DEMO</span>
+          <span className="demoband-note">
+            This is a prepared scenario using deterministic sample data.
+          </span>
+          <button className="demoband-leave" onClick={onLeave}>
+            Leave demo
+          </button>
+        </div>
+        <div className="demoband-scenarios">
+          <span className="demoband-label">Scenario</span>
           {offered.map((scenario) => (
             <button
               key={scenario.key}
-              className="scenario"
+              className="pill"
               aria-pressed={active.scenario === scenario.key && !active.stale}
               disabled={busy}
               onClick={() => onScenario(scenario.key)}
@@ -37,7 +51,7 @@ export default function DemoBar({ available, active, busy, onScenario, onStale, 
             </button>
           ))}
           <button
-            className="scenario"
+            className="pill"
             aria-pressed={active.stale}
             disabled={busy}
             onClick={onStale}
@@ -46,9 +60,6 @@ export default function DemoBar({ available, active, busy, onScenario, onStale, 
             Stale data
           </button>
         </div>
-        <button className="leave" onClick={onLeave}>
-          Leave demo
-        </button>
       </div>
     </div>
   );

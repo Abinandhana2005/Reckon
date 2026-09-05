@@ -48,7 +48,7 @@ def symbol_detail(
     user: User = Depends(current_user),
 ) -> dict:
     code = symbol.upper()
-    if code not in watchlist.watched_symbols(db, user.id):
+    if code not in watchlist.watched_symbols(db, user.id, source=user.data_source):
         raise HTTPException(status_code=404, detail=f"{code} is not on your watchlist")
     try:
         return briefing.symbol_detail(db, user, code)

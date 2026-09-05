@@ -48,8 +48,6 @@ and labelled as such, because a 40-session window would leave only 20 non-
 overlapping observations to compare against.
 """
 
-UPCOMING_EVENT_SESSIONS = 3
-
 
 @dataclass(frozen=True)
 class SymbolContext:
@@ -228,7 +226,7 @@ def _in_window(day: date, sessions: list[date], anchor_index: int) -> bool:
 
 
 UPCOMING_HORIZON_DAYS = 5
-"""Calendar days standing in for UPCOMING_EVENT_SESSIONS trading sessions.
+"""How far ahead a scheduled event is treated as upcoming.
 
 The trading calendar only runs to the last observed session, so a forward
 horizon has to be measured in calendar days. Five covers three sessions across

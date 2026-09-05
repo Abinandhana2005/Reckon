@@ -14,12 +14,18 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from app.config import DATABASE_URL, DEV_ENDPOINTS_ENABLED, WEB_DIST, live_enabled
+from app.config import (
+    DATABASE_URL,
+    DEV_ENDPOINTS_ENABLED,
+    WEB_DIST,
+    live_enabled,
+    live_provider_name,
+)
 from app.db.base import SessionLocal, engine, get_db
 from app.db.migrate import ensure_schema
 from app.db.seed import is_seeded, seed
@@ -53,6 +59,11 @@ def mount_frontend(application: FastAPI, web_dist: Path) -> bool:
 
     @application.get("/{path:path}", include_in_schema=False)
     def spa(path: str) -> FileResponse:
+        # An unrouted /api/* path is a client error, not a deep link. Without
+        # this it fell through to the SPA shell and a mistyped endpoint
+        # answered 200 with a page of HTML.
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(status_code=404, detail=f"no such endpoint: /{path}")
         candidate = web_dist / path
         if path and candidate.is_file():
             return FileResponse(candidate)
@@ -91,6 +102,7 @@ def create_app(
             "dev_endpoints": dev_endpoints,
             "frontend": (web_dist / "index.html").is_file(),
             "live_available": live_enabled(),
+            "live_provider": live_provider_name(),
         }
 
     mount_frontend(application, web_dist)

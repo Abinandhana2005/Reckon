@@ -1,10 +1,17 @@
-# One container: API, classifier, fixture and (once built) the frontend.
+# One container: API, classifier, fixture and the built frontend.
 #
 # Replay mode makes no outbound calls and runs no scheduler, so there is one
-# process to start and nothing to coordinate. The image carries no frontend
-# build stage yet because web/ holds no app to build; when the Vite project
-# lands, a node stage producing web/dist goes above this one and the rest of
-# this file is unchanged.
+# process to start and nothing to coordinate. The frontend is built in its own
+# stage so the final image carries a Python runtime only, not Node.
+
+FROM node:20-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/index.html web/vite.config.js ./
+COPY web/src ./src
+RUN npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -18,6 +25,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=web /web/dist ./web/dist
 
 # The app writes only to its database, which is Postgres in a deployment, so
 # the filesystem can stay read-only to everything but a local SQLite fallback.

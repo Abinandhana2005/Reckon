@@ -1,6 +1,6 @@
 # Frontend
 
-The React (Vite) app lives here. It is not built yet.
+The React (Vite) app lives here.
 
 FastAPI serves the production build from `web/dist` on the same origin as the
 API, so there is no CORS configuration and one deployable. `app/api/main.py`

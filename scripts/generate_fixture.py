@@ -24,7 +24,7 @@ import argparse
 import hashlib
 import json
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
