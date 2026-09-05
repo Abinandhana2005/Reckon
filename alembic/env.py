@@ -46,22 +46,38 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _run_with(connection) -> None:
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        # SQLite cannot ALTER most things in place; batch mode rewrites the
+        # table instead, so one migration script works on both backends.
+        render_as_batch=connection.dialect.name == "sqlite",
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online() -> None:
+    # A programmatic caller (`app.db.migrate.ensure_schema`) shares its own,
+    # already-authenticated connection here rather than letting this module
+    # open one from `sqlalchemy.url`. That URL was, for that caller, built
+    # from a re-serialized engine URL -- which SQLAlchemy renders with the
+    # password masked as `***` -- so reusing the real connection is what
+    # keeps a programmatic run from authenticating with that mask. The CLI
+    # (`alembic upgrade head`) sets no such connection and is unaffected.
+    shared_connection = config.attributes.get("connection")
+    if shared_connection is not None:
+        _run_with(shared_connection)
+        return
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            # SQLite cannot ALTER most things in place; batch mode rewrites the
-            # table instead, so one migration script works on both backends.
-            render_as_batch=connection.dialect.name == "sqlite",
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+        _run_with(connection)
 
 
 if context.is_offline_mode():

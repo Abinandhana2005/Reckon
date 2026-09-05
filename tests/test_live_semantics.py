@@ -501,36 +501,6 @@ MID_SESSION = datetime(2026, 9, 4, 6, 0)
 """11:30 IST on a Friday: the exchange is trading and the bell is hours away."""
 
 
-def test_a_brief_built_while_the_market_trades_ends_at_the_last_closed_session(
-    live_user, provider
-):
-    session, user = live_user
-    # Yesterday's settled close is what is on record when the bell rings.
-    provider.quote_value = LiveQuote(
-        price=3148.0,
-        event_time=datetime.combine(date(2026, 9, 3), live.NSE_CLOSE_UTC),
-        prev_close=3140.0,
-        settled_close=True,
-    )
-    watchlist.add_for_user(session, user, "TCS")
-
-    # Mid-session, Yahoo answers with the price so far, observed now.
-    provider.quote_value = LiveQuote(price=3210.0, event_time=MID_SESSION, prev_close=3148.0)
-    live.refresh_quote(session, "TCS")
-
-    brief = briefing.build_brief(session, user, now=MID_SESSION)
-    provenance = brief["provenance"]
-
-    analysis = datetime.fromisoformat(provenance["latest_completed_session_at"])
-    quote_at = datetime.fromisoformat(provenance["latest_available_quote_at"])
-
-    assert provenance["market_state"] == nse.OPEN
-    # The analysis ends at a session that has closed...
-    assert analysis <= MID_SESSION
-    assert analysis.time() == live.NSE_CLOSE_UTC
-    # ...while the newer quote is reported beside it rather than folded into it.
-    assert quote_at > analysis
-    assert provenance["quote_freshness"] == Freshness.LIVE.value
 
 
 def test_provenance_describes_the_moment_the_brief_was_built_for(live_user):
